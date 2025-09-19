@@ -73,9 +73,12 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ],
                 bottom: PreferredSize(
-                  preferredSize: const Size.fromHeight(70.0),
+                  preferredSize: const Size.fromHeight(60.0),
                   child: Container(
-                    padding: const EdgeInsets.all(16.0),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16.0,
+                      vertical: 8.0,
+                    ),
                     decoration: const BoxDecoration(
                       color: Color(0xFF6366F1),
                       borderRadius: BorderRadius.only(
@@ -95,7 +98,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             icon: const Icon(
                               Icons.chevron_left_rounded,
                               color: Colors.white,
-                              size: 28,
+                              size: 24,
                             ),
                             onPressed: () => dateProvider.previousDay(),
                           ),
@@ -105,7 +108,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             margin: const EdgeInsets.symmetric(horizontal: 16),
                             padding: const EdgeInsets.symmetric(
                               horizontal: 20,
-                              vertical: 12,
+                              vertical: 8,
                             ),
                             decoration: BoxDecoration(
                               color: Colors.white.withValues(alpha: 0.15),
@@ -121,7 +124,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               textAlign: TextAlign.center,
                               style: const TextStyle(
                                 color: Colors.white,
-                                fontSize: 16,
+                                fontSize: 14,
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
@@ -136,7 +139,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             icon: const Icon(
                               Icons.chevron_right_rounded,
                               color: Colors.white,
-                              size: 28,
+                              size: 24,
                             ),
                             onPressed: () => dateProvider.nextDay(),
                           ),
