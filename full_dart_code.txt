@@ -1,0 +1,5290 @@
+enum TransactionType { income, expense }
+
+enum TransactionSource { cash, drawer, bank }
+
+enum SnapshotType { start, end }
+import 'package:flutter/foundation.dart';
+import 'package:youssef_fabric_ledger/core/enums.dart';
+import 'package:youssef_fabric_ledger/data/local/database_helper.dart';
+import 'package:youssef_fabric_ledger/data/models/drawer_snapshot.dart';
+import 'package:youssef_fabric_ledger/data/models/expense.dart';
+import 'package:youssef_fabric_ledger/logic/providers/date_provider.dart';
+
+enum DrawerStatus { complete, pendingEnd, missingStart }
+
+class FinanceProvider with ChangeNotifier {
+  final DatabaseHelper dbHelper;
+  final DateProvider dateProvider;
+
+  // --- الحالة المالية ---
+  double _totalCashBalance = 0.0;
+  double get totalCashBalance => _totalCashBalance;
+
+  // ... (rest of the properties are the same)
+  double _grossProfit = 0.0; // = ربح اليوم (20%)
+  double get grossProfit => _grossProfit;
+  double get dailyProfit => _grossProfit;
+  double _totalExpenses = 0.0; // مصروفات اليوم
+  double get totalExpenses => _totalExpenses;
+
+  double _totalIncome = 0.0; // دخل اليوم
+  double get totalIncome => _totalIncome;
+
+  double _netProfit = 0.0; // صافي ربح اليوم = ربح اليوم - مصروفات اليوم
+  double get netProfit => _netProfit;
+
+  DrawerStatus _drawerStatus = DrawerStatus.pendingEnd;
+  DrawerStatus get drawerStatus => _drawerStatus;
+
+  // --- أرصدة الدرج لليوم ---
+  double? _startOfDayBalance;
+  double? get startOfDayBalance => _startOfDayBalance;
+
+  double? _endOfDayBalance;
+  double? get endOfDayBalance => _endOfDayBalance;
+
+  double _calculatedTurnover = 0.0;
+  double get calculatedTurnover => _calculatedTurnover;
+
+  double _profitPercent = 0.20; // 20%
+
+  Map<String, double> get drawerFinalState {
+    final opening = _startOfDayBalance ?? 0.0;
+    final closing = _endOfDayBalance ?? 0.0;
+    // This calculation might need adjustment based on business logic
+    // For now, it's a simple difference.
+    final difference = closing - opening;
+
+    return {
+      'openingBalance': opening,
+      'closingBalance': closing,
+      'difference': difference,
+    };
+  }
+
+  // --- حالة الدرج المحدثة ---
+  Map<String, DrawerSnapshot?> _drawerSnapshots = {'start': null, 'end': null};
+  Map<String, DrawerSnapshot?> get drawerSnapshots => _drawerSnapshots;
+
+  // إحصائيات شهرية وسنوية
+  double _monthlyIncome = 0.0;
+  double get monthlyIncome => _monthlyIncome;
+
+  double _monthlyExpenses = 0.0;
+  double get monthlyExpenses => _monthlyExpenses;
+
+  double _monthlyNetProfit = 0.0;
+  double get monthlyNetProfit => _monthlyNetProfit;
+
+  FinanceProvider({required this.dbHelper, required this.dateProvider}) {
+    // Listen to date changes and refetch data
+    dateProvider.addListener(_onDateChanged);
+    loadInitialData();
+  }
+
+  void _onDateChanged() {
+    fetchFinancialDataForSelectedDate();
+  }
+
+  @override
+  void dispose() {
+    dateProvider.removeListener(_onDateChanged);
+    super.dispose();
+  }
+
+  Future<void> loadInitialData() async {
+    final savedBalance = await dbHelper.getSetting('totalCashBalance');
+    _totalCashBalance = double.tryParse(savedBalance ?? '0.0') ?? 0.0;
+    await fetchFinancialDataForSelectedDate();
+  }
+
+  /// Fetches financial data for the date selected in DateProvider.
+  Future<void> fetchFinancialDataForSelectedDate() async {
+    final selectedDate = dateProvider.selectedDate;
+
+    // 1. Fetch drawer snapshots
+    final startSnapshot = await dbHelper.getSnapshotForDate(
+      selectedDate,
+      SnapshotType.start,
+    );
+    final endSnapshot = await dbHelper.getSnapshotForDate(
+      selectedDate,
+      SnapshotType.end,
+    );
+
+    // 2. Determine starting balance
+    double? startAmount = startSnapshot?.cashAmount;
+    if (startAmount == null) {
+      final lastEndSnapshot = await dbHelper.getLatestEndSnapshotBefore(
+        selectedDate,
+      );
+      startAmount = lastEndSnapshot?.cashAmount;
+    }
+
+    _startOfDayBalance = startAmount;
+    _endOfDayBalance = endSnapshot?.cashAmount;
+
+    // 3. Determine drawer status
+    if (_startOfDayBalance == null) {
+      _drawerStatus = DrawerStatus.missingStart;
+    } else if (_endOfDayBalance == null) {
+      _drawerStatus = DrawerStatus.pendingEnd;
+    } else {
+      _drawerStatus = DrawerStatus.complete;
+    }
+
+    // 4. Calculate turnover
+    _calculatedTurnover = 0.0;
+    if (_drawerStatus == DrawerStatus.complete) {
+      final drawerOutflows = await dbHelper.getDrawerExpensesForDate(
+        selectedDate,
+      );
+      final drawerInflows = await dbHelper.getDrawerIncomesForDate(
+        selectedDate,
+      );
+      _calculatedTurnover =
+          (_endOfDayBalance! - _startOfDayBalance!) +
+          drawerOutflows -
+          drawerInflows;
+    }
+
+    // 5. Calculate final totals
+    final manualIncomes = await dbHelper.getIncomeForDate(selectedDate);
+    final manualIncomesTotal = manualIncomes.fold(
+      0.0,
+      (sum, item) => sum + item.amount,
+    );
+
+    _totalIncome = _calculatedTurnover + manualIncomesTotal;
+
+    final allExpenses = await dbHelper.getExpensesForDate(selectedDate);
+    _totalExpenses = allExpenses.fold(0.0, (sum, item) => sum + item.amount);
+
+    _grossProfit = _totalIncome * _profitPercent;
+    _netProfit = _grossProfit - _totalExpenses;
+
+    notifyListeners();
+  }
+
+  /// Refreshes data for the current day.
+  Future<void> refreshTodayData() async {
+    // This method now simply ensures the date is current and fetches data.
+    // The actual date change is handled by DateProvider.
+    if (!dateProvider.isSameDay(dateProvider.selectedDate, DateTime.now())) {
+      dateProvider.selectDate(DateTime.now());
+    } else {
+      await fetchFinancialDataForSelectedDate();
+    }
+  }
+
+  Future<void> updateTotalCashBalance(double newBalance) async {
+    _totalCashBalance = newBalance;
+    await dbHelper.saveSetting('totalCashBalance', newBalance.toString());
+    notifyListeners();
+  }
+
+  Future<void> saveDrawerSnapshot({
+    required DateTime date,
+    required SnapshotType type,
+    required double amount,
+    String? note,
+  }) async {
+    final snapshot = DrawerSnapshot(
+      date: date,
+      type: type,
+      cashAmount: amount,
+      note: note,
+      createdAt: DateTime.now(),
+    );
+    final savedSnapshot = await dbHelper.saveDrawerSnapshot(snapshot);
+    _drawerSnapshots[type.name] = savedSnapshot;
+
+    if (dateProvider.isSameDay(date, dateProvider.selectedDate)) {
+      await fetchFinancialDataForSelectedDate();
+    } else {
+      notifyListeners();
+    }
+  }
+
+  Future<void> addOrUpdateExpense(Expense expense) async {
+    if (expense.id == null) {
+      await dbHelper.createExpense(expense);
+    } else {
+      await dbHelper.updateExpense(expense);
+    }
+    // After saving, refresh the data for the currently selected date
+    // to ensure the UI is up-to-date.
+    await fetchFinancialDataForSelectedDate();
+  }
+}
+import 'package:flutter/material.dart';
+
+/// A provider dedicated to managing the selected date for the application.
+///
+/// This class encapsulates the logic for date selection, allowing other providers
+/// and widgets to listen for and react to date changes without managing the
+/// date state themselves.
+class DateProvider with ChangeNotifier {
+  DateTime _selectedDate = DateTime.now();
+
+  /// The currently selected date.
+  ///
+  /// When a new date is set, it notifies all listeners.
+  DateTime get selectedDate => _selectedDate;
+
+  /// Updates the selected date and notifies listeners.
+  ///
+  /// This is the primary method for changing the application's active date.
+  void selectDate(DateTime newDate) {
+    if (isSameDay(_selectedDate, newDate)) return;
+    _selectedDate = newDate;
+    notifyListeners();
+  }
+
+  /// Moves the selected date to the next day.
+  void nextDay() {
+    _selectedDate = _selectedDate.add(const Duration(days: 1));
+    notifyListeners();
+  }
+
+  /// Moves the selected date to the previous day.
+  void previousDay() {
+    _selectedDate = _selectedDate.subtract(const Duration(days: 1));
+    notifyListeners();
+  }
+
+  /// Checks if two [DateTime] objects represent the same calendar day.
+  bool isSameDay(DateTime a, DateTime b) {
+    return a.year == b.year && a.month == b.month && a.day == b.day;
+  }
+}
+class DrawerSnapshot {
+  int? id;
+  final DateTime date;
+  final double startBalance;
+  final double endBalance;
+
+  DrawerSnapshot({
+    this.id,
+    required this.date,
+    required this.startBalance,
+    required this.endBalance,
+  });
+
+  factory DrawerSnapshot.fromMap(Map<String, dynamic> map) {
+    return DrawerSnapshot(
+      id: map['id'],
+      date: DateTime.parse(map['date']),
+      startBalance: map['startBalance'],
+      endBalance: map['endBalance'],
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'date': date.toIso8601String().split('T').first, // YYYY-MM-DD
+      'startBalance': startBalance,
+      'endBalance': endBalance,
+    };
+  }
+}import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:provider/provider.dart';
+import 'package:workmanager/workmanager.dart';
+import 'package:youssef_fabric_ledger/data/local/database_helper.dart';
+import 'package:youssef_fabric_ledger/logic/providers/date_provider.dart';
+import 'package:youssef_fabric_ledger/logic/providers/finance_provider.dart';
+import 'package:youssef_fabric_ledger/presentation/screens/main_layout.dart';
+
+// This callback is executed in a separate isolate when the background task runs.
+@pragma('vm:entry-point')
+void callbackDispatcher() {
+  Workmanager().executeTask((task, inputData) {
+    // TODO: Implement the actual backup logic by calling your BackupService.
+    // final backupService = BackupService();
+    // await backupService.performBackup();
+    print("Native called background task: $task"); // For debugging
+    return Future.value(true);
+  });
+}
+
+void main() async {
+  // Ensure that plugin services are initialized so that `Workmanager` can work.
+  WidgetsFlutterBinding.ensureInitialized();
+  // Initialize Workmanager for background tasks.
+  Workmanager().initialize(callbackDispatcher, isInDebugMode: true);
+
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    // MultiProvider allows us to provide multiple objects to the widget tree.
+    return MultiProvider(
+      providers: [
+        // The DateProvider is now available to the entire app.
+        ChangeNotifierProvider(create: (_) => DateProvider()),
+        // FinanceProvider now depends on DateProvider.
+        ChangeNotifierProxyProvider<DateProvider, FinanceProvider>(
+          create: (context) => FinanceProvider(
+            dbHelper: DatabaseHelper.instance,
+            dateProvider: Provider.of<DateProvider>(context, listen: false),
+          ),
+          update: (context, dateProvider, previousFinanceProvider) =>
+              FinanceProvider(
+                dbHelper: DatabaseHelper.instance,
+                dateProvider: dateProvider,
+              ),
+        ),
+      ],
+      child: MaterialApp(
+        title: 'دفتر أقمشة يوسف',
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData(
+          // Using a modern color scheme and the recommended Tajawal font.
+          colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2563EB)),
+          useMaterial3: true,
+          fontFamily: 'Tajawal',
+          scaffoldBackgroundColor: const Color(0xFFF4F6F8),
+          appBarTheme: const AppBarTheme(
+            backgroundColor: Color(0xFF2563EB),
+            foregroundColor: Colors.white,
+            centerTitle: true,
+            elevation: 1,
+          ),
+        ),
+        // --- Arabic Language and RTL Support ---
+        localizationsDelegates: const [
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        supportedLocales: const [
+          Locale('en', ''), // English for Latin digits
+          Locale('ar', ''), // Arabic
+        ],
+        locale: const Locale('en', ''), // Force English locale for Latin digits
+        home: const MainLayout(),
+      ),
+    );
+  }
+}
+// lib/data/models/expense.dart
+import 'package:youssef_fabric_ledger/core/enums.dart';
+
+class Expense {
+  final int? id;
+  final DateTime date;
+  final double amount;
+  final int categoryId;
+  final TransactionSource source;
+  final String? note;
+  final DateTime createdAt;
+
+  Expense({
+    this.id,
+    required this.date,
+    required this.amount,
+    required this.categoryId,
+    required this.source,
+    this.note,
+    required this.createdAt,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'date': date.toIso8601String(),
+      'amount': amount,
+      'categoryId': categoryId,
+      'source': source.name,
+      'note': note,
+      'createdAt': createdAt.toIso8601String(),
+    };
+  }
+
+  factory Expense.fromMap(Map<String, dynamic> map) {
+    return Expense(
+      id: map['id'],
+      date: DateTime.parse(map['date']),
+      amount: (map['amount'] as num).toDouble(),
+      categoryId: map['categoryId'],
+      source: TransactionSource.values.byName(map['source']),
+      note: map['note'],
+      createdAt: DateTime.parse(map['createdAt']),
+    );
+  }
+
+  Expense copyWith({
+    int? id,
+    DateTime? date,
+    double? amount,
+    int? categoryId,
+    TransactionSource? source,
+    String? note,
+    DateTime? createdAt,
+  }) {
+    return Expense(
+      id: id ?? this.id,
+      date: date ?? this.date,
+      amount: amount ?? this.amount,
+      categoryId: categoryId ?? this.categoryId,
+      source: source ?? this.source,
+      note: note ?? this.note,
+      createdAt: createdAt ?? this.createdAt,
+    );
+  }
+}
+// lib/data/models/party.dart
+class Party {
+  final int? id;
+  final String name;
+  final String type; // 'vendor' or 'person'
+  final String? phone;
+
+  Party({this.id, required this.name, required this.type, this.phone});
+
+  Map<String, dynamic> toMap() {
+    return {'id': id, 'name': name, 'type': type, 'phone': phone};
+  }
+
+  factory Party.fromMap(Map<String, dynamic> map) {
+    return Party(
+      id: map['id'],
+      name: map['name'],
+      type: map['type'],
+      phone: map['phone'],
+    );
+  }
+
+  Party copyWith({int? id, String? name, String? type, String? phone}) {
+    return Party(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      type: type ?? this.type,
+      phone: phone ?? this.phone,
+    );
+  }
+}
+// lib/data/models/income.dart
+
+import 'package:youssef_fabric_ledger/core/enums.dart';
+
+class Income {
+  final int? id;
+  final DateTime date;
+  final double amount;
+  final TransactionSource source;
+  final String? note;
+  final DateTime createdAt;
+
+  Income({
+    this.id,
+    required this.date,
+    required this.amount,
+    required this.source,
+    this.note,
+    required this.createdAt,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'date': date.toIso8601String(),
+      'amount': amount,
+      'source': source.name,
+      'note': note,
+      'createdAt': createdAt.toIso8601String(),
+    };
+  }
+
+  factory Income.fromMap(Map<String, dynamic> map) {
+    return Income(
+      id: map['id'],
+      date: DateTime.parse(map['date']),
+      amount: (map['amount'] as num).toDouble(),
+      source: TransactionSource.values.byName(map['source']),
+      note: map['note'],
+      createdAt: DateTime.parse(map['createdAt']),
+    );
+  }
+
+  Income copyWith({
+    int? id,
+    DateTime? date,
+    double? amount,
+    TransactionSource? source,
+    String? note,
+    DateTime? createdAt,
+  }) {
+    return Income(
+      id: id ?? this.id,
+      date: date ?? this.date,
+      amount: amount ?? this.amount,
+      source: source ?? this.source,
+      note: note ?? this.note,
+      createdAt: createdAt ?? this.createdAt,
+    );
+  }
+}
+// lib/data/models/drawer_snapshot.dart
+import 'package:youssef_fabric_ledger/core/enums.dart';
+
+class DrawerSnapshot {
+  final int? id;
+  final DateTime date;
+  final SnapshotType type;
+  final double cashAmount;
+  final String? note;
+  final DateTime createdAt;
+
+  DrawerSnapshot({
+    this.id,
+    required this.date,
+    required this.type,
+    required this.cashAmount,
+    this.note,
+    required this.createdAt,
+  });
+
+  factory DrawerSnapshot.fromMap(Map<String, dynamic> map) {
+    final dateString = map['date'] as String;
+    // The database might store the date as 'YYYY-MM-DD' for the UNIQUE constraint.
+    // We need to parse it correctly, assuming UTC if no time is present.
+    final date = dateString.length == 10
+        ? DateTime.parse('${dateString}T00:00:00Z')
+        : DateTime.parse(dateString);
+
+    return DrawerSnapshot(
+      id: map['id'] as int?,
+      date: date,
+      type: SnapshotType.values.byName(map['type'] as String),
+      cashAmount: (map['cashAmount'] as num).toDouble(),
+      note: map['note'] as String?,
+      createdAt: DateTime.parse(map['createdAt'] as String),
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'date': date.toIso8601String(),
+      'type': type.name,
+      'cashAmount': cashAmount,
+      'note': note,
+      'createdAt': createdAt.toIso8601String(),
+    };
+  }
+
+  /// This map is specifically for inserting/updating the database,
+  /// where the 'date' column has a UNIQUE constraint on the date part only (YYYY-MM-DD).
+  Map<String, dynamic> toMapForDb() {
+    return {
+      'id': id,
+      'date': date.toIso8601String().substring(0, 10), // For UNIQUE constraint
+      'type': type.name,
+      'cashAmount': cashAmount,
+      'note': note,
+      'createdAt': createdAt.toIso8601String(),
+    };
+  }
+
+  DrawerSnapshot copyWith({
+    int? id,
+    DateTime? date,
+    SnapshotType? type,
+    double? cashAmount,
+    String? note,
+    DateTime? createdAt,
+  }) {
+    return DrawerSnapshot(
+      id: id ?? this.id,
+      date: date ?? this.date,
+      type: type ?? this.type,
+      cashAmount: cashAmount ?? this.cashAmount,
+      note: note ?? this.note,
+      createdAt: createdAt ?? this.createdAt,
+    );
+  }
+}
+// lib/data/models/category.dart
+class Category {
+  final int? id;
+  final String name;
+  final int iconCodePoint; // لتخزين رمز الأيقونة
+  final String type; // 'expense' or 'income'
+
+  Category({
+    this.id,
+    required this.name,
+    required this.iconCodePoint,
+    required this.type,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'name': name,
+      'iconCodePoint': iconCodePoint,
+      'type': type,
+    };
+  }
+
+  factory Category.fromMap(Map<String, dynamic> map) {
+    return Category(
+      id: map['id'],
+      name: map['name'],
+      iconCodePoint: map['iconCodePoint'],
+      type: map['type'],
+    );
+  }
+
+  /// مقارنة الكائنات بناءً على المحتوى وليس المرجع
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is Category &&
+        other.id == id &&
+        other.name == name &&
+        other.iconCodePoint == iconCodePoint &&
+        other.type == type;
+  }
+
+  /// حساب hash code للكائن
+  @override
+  int get hashCode {
+    return id.hashCode ^ name.hashCode ^ iconCodePoint.hashCode ^ type.hashCode;
+  }
+
+  /// تمثيل نصي للكائن للتصحيح
+  @override
+  String toString() {
+    return 'Category(id: $id, name: $name, iconCodePoint: $iconCodePoint, type: $type)';
+  }
+
+  Category copyWith({int? id, String? name, int? iconCodePoint, String? type}) {
+    return Category(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      iconCodePoint: iconCodePoint ?? this.iconCodePoint,
+      type: type ?? this.type,
+    );
+  }
+}
+// lib/data/models/debt_entry.dart
+class DebtEntry {
+  final int? id;
+  final DateTime date;
+  final int partyId;
+  final String kind; // 'purchase_credit', 'payment', 'loan_out', 'settlement'
+  final double amount;
+  final String? note;
+  final DateTime createdAt;
+
+  DebtEntry({
+    this.id,
+    required this.date,
+    required this.partyId,
+    required this.kind,
+    required this.amount,
+    this.note,
+    required this.createdAt,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'date': date.toIso8601String(),
+      'partyId': partyId,
+      'kind': kind,
+      'amount': amount,
+      'note': note,
+      'createdAt': createdAt.toIso8601String(),
+    };
+  }
+
+  factory DebtEntry.fromMap(Map<String, dynamic> map) {
+    return DebtEntry(
+      id: map['id'] as int?,
+      date: DateTime.parse(map['date'] as String),
+      partyId: map['partyId'] as int,
+      kind: map['kind'] as String,
+      amount: (map['amount'] as num).toDouble(),
+      note: map['note'] as String?,
+      createdAt: DateTime.parse(map['createdAt'] as String),
+    );
+  }
+
+  DebtEntry copyWith({
+    int? id,
+    DateTime? date,
+    int? partyId,
+    String? kind,
+    double? amount,
+    String? note,
+    DateTime? createdAt,
+  }) {
+    return DebtEntry(
+      id: id ?? this.id,
+      date: date ?? this.date,
+      partyId: partyId ?? this.partyId,
+      kind: kind ?? this.kind,
+      amount: amount ?? this.amount,
+      note: note ?? this.note,
+      createdAt: createdAt ?? this.createdAt,
+    );
+  }
+}
+// lib/data/local/database_helper.dart
+import 'package:flutter/material.dart';
+import 'package:path/path.dart';
+import 'package:sqflite/sqflite.dart';
+import 'package:youssef_fabric_ledger/core/enums.dart';
+import 'package:youssef_fabric_ledger/data/models/category.dart';
+import 'package:youssef_fabric_ledger/data/models/debt_entry.dart';
+import 'package:youssef_fabric_ledger/data/models/drawer_snapshot.dart';
+import 'package:youssef_fabric_ledger/data/models/expense.dart';
+import 'package:youssef_fabric_ledger/data/models/income.dart';
+import 'package:youssef_fabric_ledger/data/models/party.dart';
+
+class DatabaseHelper {
+  static final DatabaseHelper instance = DatabaseHelper._init();
+  static Database? _database;
+
+  DatabaseHelper._init();
+
+  Future<Database> get database async {
+    if (_database != null) return _database!;
+    _database = await _initDB('youssef_ledger.db');
+    return _database!;
+  }
+
+  Future<Database> _initDB(String filePath) async {
+    final dbPath = await getDatabasesPath();
+    final path = join(dbPath, filePath);
+    return await openDatabase(
+      path,
+      version: 4, // <-- Incremented version
+      onCreate: _createDB,
+      onUpgrade: _onUpgrade,
+    );
+  }
+
+  Future _createDB(Database db, int version) async {
+    await db.execute('''
+      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)
+    ''');
+    await db.insert('settings', {'key': 'totalCashBalance', 'value': '0.0'});
+
+    await db.execute('''
+      CREATE TABLE expenses (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        amount REAL NOT NULL,
+        categoryId INTEGER NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('cash', 'drawer', 'bank')),
+        note TEXT,
+        createdAt TEXT NOT NULL
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        iconCodePoint INTEGER NOT NULL,
+        type TEXT NOT NULL CHECK(type IN ('expense', 'income'))
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE income (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        amount REAL NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('cash', 'drawer', 'bank')), // <-- Added 'cash'
+        note TEXT,
+        createdAt TEXT NOT NULL
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE parties (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL CHECK (type IN ('person','vendor')),
+        phone TEXT
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE debt_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        partyId INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        amount REAL NOT NULL,
+        note TEXT,
+        createdAt TEXT NOT NULL,
+        FOREIGN KEY (partyId) REFERENCES parties (id) ON DELETE CASCADE
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE drawer_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        type TEXT NOT NULL CHECK(type IN ('start', 'end')),
+        cashAmount REAL NOT NULL,
+        note TEXT,
+        createdAt TEXT NOT NULL,
+        UNIQUE(date, type)
+      )
+    ''');
+
+    await _insertDefaultCategories(db);
+  }
+
+  Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      // Migrations for version 2 if any
+    }
+    if (oldVersion < 3) {
+      await db.execute('''
+      CREATE TABLE IF NOT EXISTS drawer_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        type TEXT NOT NULL CHECK(type IN ('start', 'end')),
+        cashAmount REAL NOT NULL,
+        note TEXT,
+        createdAt TEXT NOT NULL,
+        UNIQUE(date, type)
+        )
+      ''');
+    }
+    if (oldVersion < 4) {
+      // Add 'cash' to the CHECK constraint of the income table
+      // SQLite doesn't support ALTER TABLE to modify a CHECK constraint directly.
+      // The common workaround is to create a new table, copy data, and rename.
+      await db.execute('PRAGMA foreign_keys=off;');
+      await db.transaction((txn) async {
+        await txn.execute('''
+          CREATE TABLE income_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            amount REAL NOT NULL,
+            source TEXT NOT NULL CHECK(source IN ('cash', 'drawer', 'bank')),
+            note TEXT,
+            createdAt TEXT NOT NULL
+          )
+        ''');
+        await txn.execute(
+          'INSERT INTO income_new(id, date, amount, source, note, createdAt) SELECT id, date, amount, source, note, createdAt FROM income;',
+        );
+        await txn.execute('DROP TABLE income;');
+        await txn.execute('ALTER TABLE income_new RENAME TO income;');
+      });
+      await db.execute('PRAGMA foreign_keys=on;');
+
+      // Create indexes for performance
+      await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date);',
+      );
+      await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_expenses_source ON expenses(source);',
+      );
+      await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_income_date ON income(date);',
+      );
+      await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_income_source ON income(source);',
+      );
+      await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_drawer_snapshots_date_type ON drawer_snapshots(date, type);',
+      );
+      await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_debt_entries_partyId ON debt_entries(partyId);',
+      );
+    }
+  }
+
+  // --- CRUD for Parties ---
+  Future<Party> createParty(Party party) async {
+    final db = await instance.database;
+    final id = await db.insert('parties', party.toMap());
+    return party.copyWith(id: id);
+  }
+
+  Future<List<Party>> getParties(String type) async {
+    final db = await instance.database;
+    final maps = await db.query(
+      'parties',
+      where: 'type = ?',
+      whereArgs: [type],
+    );
+    return List.generate(maps.length, (i) => Party.fromMap(maps[i]));
+  }
+
+  // --- CRUD for Debt Entries ---
+  Future<DebtEntry> createDebtEntry(DebtEntry debtEntry) async {
+    final db = await instance.database;
+    final id = await db.insert('debt_entries', debtEntry.toMap());
+    return debtEntry.copyWith(id: id);
+  }
+
+  Future<double> getPartyBalance(int partyId) async {
+    final db = await instance.database;
+    final entries = await db.query(
+      'debt_entries',
+      where: 'partyId = ?',
+      whereArgs: [partyId],
+    );
+    double balance = 0.0;
+    for (var entry in entries) {
+      final kind = entry['kind'] as String;
+      final amount = entry['amount'] as double;
+      if (kind == 'purchase_credit' || kind == 'loan_out') {
+        balance += amount;
+      } else if (kind == 'payment' || kind == 'settlement') {
+        balance -= amount;
+      }
+    }
+    return balance;
+  }
+
+  Future<List<DebtEntry>> getDebtEntriesForParty(int partyId) async {
+    final db = await instance.database;
+    final maps = await db.query(
+      'debt_entries',
+      where: 'partyId = ?',
+      whereArgs: [partyId],
+      orderBy: 'date DESC',
+    );
+    return List.generate(maps.length, (i) => DebtEntry.fromMap(maps[i]));
+  }
+
+  // --- CRUD for Categories ---
+  Future<Category> createCategory(Category category) async {
+    final db = await instance.database;
+    final id = await db.insert('categories', category.toMap());
+    return category.copyWith(id: id);
+  }
+
+  Future<List<Category>> getCategories(String type) async {
+    final db = await instance.database;
+    final maps = await db.query(
+      'categories',
+      where: 'type = ?',
+      whereArgs: [type],
+      orderBy: 'name',
+    );
+    return List.generate(maps.length, (i) => Category.fromMap(maps[i]));
+  }
+
+  Future<Category?> getCategoryById(int id) async {
+    final db = await instance.database;
+    final maps = await db.query('categories', where: 'id = ?', whereArgs: [id]);
+    if (maps.isNotEmpty) {
+      return Category.fromMap(maps.first);
+    }
+    return null;
+  }
+
+  Future<int> updateCategory(Category category) async {
+    final db = await instance.database;
+    return db.update(
+      'categories',
+      category.toMap(),
+      where: 'id = ?',
+      whereArgs: [category.id],
+    );
+  }
+
+  Future<int> deleteCategory(int id) async {
+    final db = await instance.database;
+    return db.delete('categories', where: 'id = ?', whereArgs: [id]);
+  }
+
+  // --- CRUD for Expenses ---
+  Future<Expense> createExpense(Expense expense) async {
+    final db = await instance.database;
+    final id = await db.insert('expenses', expense.toMap());
+    return expense.copyWith(id: id);
+  }
+
+  Future<List<Expense>> getExpensesForDate(DateTime date) async {
+    final db = await instance.database;
+    final dateStart = DateTime(
+      date.year,
+      date.month,
+      date.day,
+    ).toIso8601String();
+    final dateEnd = DateTime(
+      date.year,
+      date.month,
+      date.day + 1,
+    ).toIso8601String();
+    final maps = await db.query(
+      'expenses',
+      where: 'date >= ? AND date < ?',
+      whereArgs: [dateStart, dateEnd],
+      orderBy: 'createdAt DESC',
+    );
+    return List.generate(maps.length, (i) => Expense.fromMap(maps[i]));
+  }
+
+  Future<List<Expense>> getExpensesForDateRange(
+    DateTime startDate,
+    DateTime endDate,
+  ) async {
+    final db = await instance.database;
+    final maps = await db.query(
+      'expenses',
+      where: 'date >= ? AND date < ?',
+      whereArgs: [startDate.toIso8601String(), endDate.toIso8601String()],
+      orderBy: 'date DESC',
+    );
+    return List.generate(maps.length, (i) => Expense.fromMap(maps[i]));
+  }
+
+  Future<int> updateExpense(Expense expense) async {
+    final db = await instance.database;
+    return db.update(
+      'expenses',
+      expense.toMap(),
+      where: 'id = ?',
+      whereArgs: [expense.id],
+    );
+  }
+
+  Future<int> deleteExpense(int id) async {
+    final db = await instance.database;
+    return db.delete('expenses', where: 'id = ?', whereArgs: [id]);
+  }
+
+  // --- CRUD for Income ---
+  Future<Income> createIncome(Income income) async {
+    final db = await instance.database;
+    final id = await db.insert('income', income.toMap());
+    return income.copyWith(id: id);
+  }
+
+  Future<List<Income>> getIncomeForDate(DateTime date) async {
+    final db = await instance.database;
+    final dateStart = DateTime(
+      date.year,
+      date.month,
+      date.day,
+    ).toIso8601String();
+    final dateEnd = DateTime(
+      date.year,
+      date.month,
+      date.day + 1,
+    ).toIso8601String();
+    final maps = await db.query(
+      'income',
+      where: 'date >= ? AND date < ?',
+      whereArgs: [dateStart, dateEnd],
+      orderBy: 'createdAt DESC',
+    );
+    return List.generate(maps.length, (i) => Income.fromMap(maps[i]));
+  }
+
+  Future<List<Income>> getIncomeForDateRange(
+    DateTime startDate,
+    DateTime endDate,
+  ) async {
+    final db = await instance.database;
+    final maps = await db.query(
+      'income',
+      where: 'date >= ? AND date < ?',
+      whereArgs: [startDate.toIso8601String(), endDate.toIso8601String()],
+      orderBy: 'date DESC',
+    );
+    return List.generate(maps.length, (i) => Income.fromMap(maps[i]));
+  }
+
+  Future<List<DrawerSnapshot>> getAllDrawerSnapshots() async {
+    final db = await instance.database;
+    final maps = await db.query('drawer_snapshots', orderBy: 'date DESC');
+    return List.generate(maps.length, (i) => DrawerSnapshot.fromMap(maps[i]));
+  }
+
+  Future<int> deleteDrawerSnapshot(int id) async {
+    final db = await instance.database;
+    return db.delete('drawer_snapshots', where: 'id = ?', whereArgs: [id]);
+  }
+
+  // --- Drawer Snapshot ---
+  Future<DrawerSnapshot> saveDrawerSnapshot(DrawerSnapshot snapshot) async {
+    final db = await instance.database;
+    // The toMapForDb method now handles the date string conversion
+    final data = snapshot.toMapForDb();
+    final id = await db.insert(
+      'drawer_snapshots',
+      data,
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    return snapshot.copyWith(id: id);
+  }
+
+  Future<DrawerSnapshot?> getSnapshotForDate(
+    DateTime date,
+    SnapshotType type,
+  ) async {
+    final db = await instance.database;
+    final dateString = date.toIso8601String().substring(0, 10);
+    final maps = await db.query(
+      'drawer_snapshots',
+      where: 'date = ? AND type = ?',
+      whereArgs: [dateString, type.name], // <-- Use enum's name
+      limit: 1,
+    );
+    if (maps.isNotEmpty) {
+      return DrawerSnapshot.fromMap(maps.first);
+    }
+    return null;
+  }
+
+  Future<DrawerSnapshot?> getLatestEndSnapshotBefore(DateTime date) async {
+    final db = await instance.database;
+    final dateString = date.toIso8601String().substring(0, 10);
+    final maps = await db.query(
+      'drawer_snapshots',
+      where: 'type = ? AND date < ?',
+      whereArgs: [SnapshotType.end.name, dateString], // <-- Use enum's name
+      orderBy: 'date DESC',
+      limit: 1,
+    );
+    if (maps.isNotEmpty) {
+      return DrawerSnapshot.fromMap(maps.first);
+    }
+    return null;
+  }
+
+  Future<double> getDrawerExpensesForDate(DateTime date) async {
+    final db = await instance.database;
+    final dateString = date.toIso8601String().substring(0, 10);
+    final result = await db.rawQuery(
+      'SELECT SUM(amount) as total FROM expenses WHERE date LIKE ? AND source = ?',
+      ['$dateString%', TransactionSource.drawer.name], // <-- Use enum's name
+    );
+    return (result.first['total'] as num?)?.toDouble() ?? 0.0;
+  }
+
+  Future<double> getDrawerIncomesForDate(DateTime date) async {
+    final db = await instance.database;
+    final dateString = date.toIso8601String().substring(0, 10);
+    final result = await db.rawQuery(
+      'SELECT SUM(amount) as total FROM income WHERE date LIKE ? AND source = ?',
+      ['$dateString%', TransactionSource.drawer.name], // <-- Use enum's name
+    );
+    return (result.first['total'] as num?)?.toDouble() ?? 0.0;
+  }
+
+  // --- Settings ---
+  Future<void> saveSetting(String key, String value) async {
+    final db = await instance.database;
+    await db.insert('settings', {
+      'key': key,
+      'value': value,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<String?> getSetting(String key) async {
+    final db = await instance.database;
+    final maps = await db.query('settings', where: 'key = ?', whereArgs: [key]);
+    if (maps.isNotEmpty) {
+      return maps.first['value'] as String?;
+    }
+    return null;
+  }
+
+  // --- Default Data ---
+  Future<void> _insertDefaultCategories(Database db) async {
+    final categories = [
+      {'name': 'مواصلات', 'icon': Icons.directions_bus, 'type': 'expense'},
+      {'name': 'طعام', 'icon': Icons.restaurant, 'type': 'expense'},
+      {'name': 'تسوق', 'icon': Icons.shopping_bag, 'type': 'expense'},
+      {'name': 'منزل', 'icon': Icons.home, 'type': 'expense'},
+      {'name': 'صحة', 'icon': Icons.health_and_safety, 'type': 'expense'},
+      {'name': 'فواتير', 'icon': Icons.receipt_long, 'type': 'expense'},
+    ];
+    for (var cat in categories) {
+      await db.insert('categories', {
+        'name': cat['name'] as String,
+        'iconCodePoint': (cat['icon'] as IconData).codePoint,
+        'type': cat['type'] as String,
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+  }
+}
+// lib/presentation/screens/debts_screen.dart
+import 'package:flutter/material.dart';
+import 'package:youssef_fabric_ledger/data/local/database_helper.dart';
+import 'package:youssef_fabric_ledger/data/models/party.dart';
+import 'package:youssef_fabric_ledger/presentation/screens/party_details_screen.dart';
+import '../theme/action_button_styles.dart';
+import '../widgets/debt_transaction_modal.dart';
+import '../widgets/parties_list_view.dart'; // سنقوم بنقل PartiesListView إلى ملفه الخاص
+
+class DebtsScreen extends StatefulWidget {
+  const DebtsScreen({super.key});
+
+  @override
+  State<DebtsScreen> createState() => _DebtsScreenState();
+}
+
+class _DebtsScreenState extends State<DebtsScreen> {
+  String _selectedPartyType = 'vendor';
+
+  // --- ✅ مفتاح للوصول إلى حالة PartiesListView وتحديثها ---
+  final GlobalKey<_PartiesListViewState> _partiesListKey = GlobalKey();
+
+  // --- ✅ دالة لفتح نافذة إضافة طرف جديد ---
+  void _showAddPartyDialog() async {
+    final nameController = TextEditingController();
+    final newPartyName = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(
+          'إضافة ${_selectedPartyType == 'vendor' ? 'مورد' : 'شخص'} جديد',
+        ),
+        content: TextField(
+          controller: nameController,
+          decoration: const InputDecoration(hintText: "الاسم"),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('إلغاء'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(nameController.text),
+            child: const Text('إضافة'),
+          ),
+        ],
+      ),
+    );
+
+    if (newPartyName != null && newPartyName.isNotEmpty) {
+      final newParty = Party(name: newPartyName, type: _selectedPartyType);
+      await DatabaseHelper.instance.createParty(newParty);
+      // --- ✅ تحديث القائمة بعد الإضافة ---
+      _partiesListKey.currentState?.refreshData();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Scaffold(
+        appBar: AppBar(title: const Text('الديون')),
+        // --- ✅ استخدام Stack لوضع الزر فوق القائمة ---
+        body: Stack(
+          children: [
+            Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: _buildCustomToggleButtons(context),
+                ),
+                Expanded(
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 250),
+                    child: PartiesListView(
+                      key: _partiesListKey, // استخدام المفتاح هنا
+                      partyType: _selectedPartyType,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 80), // مساحة فارغة في الأسفل للزر
+              ],
+            ),
+            // --- ✅ الزر الجديد المخصص ---
+            Positioned(
+              bottom: 16,
+              left: 16,
+              right: 16,
+              child: FloatingActionButton.extended(
+                onPressed: _showAddPartyDialog,
+                label: Text(
+                  _selectedPartyType == 'vendor' ? 'إضافة مورد' : 'إضافة شخص',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                icon: const Icon(Icons.add),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // --- دالة لبناء أزرار التبديل بالتصميم المخصص ---
+  Widget _buildCustomToggleButtons(BuildContext context) {
+    final bool isVendorSelected = _selectedPartyType == 'vendor';
+
+    return Container(
+      height: 50,
+      decoration: BoxDecoration(
+        color: Colors.grey.shade200,
+        borderRadius: BorderRadius.circular(
+          25.0,
+        ), // نصف الارتفاع لجعله بيضاويًا
+      ),
+      child: Stack(
+        children: [
+          // --- خلفية الزر النشط المتحركة ---
+          AnimatedAlign(
+            alignment: isVendorSelected
+                ? Alignment.centerRight
+                : Alignment.centerLeft,
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeInOut,
+            child: Container(
+              width:
+                  (MediaQuery.of(context).size.width - 32) /
+                  2, // نصف عرض الحاوية
+              height: 50,
+              decoration: BoxDecoration(
+                color: Theme.of(context).primaryColor,
+                borderRadius: BorderRadius.circular(25.0),
+              ),
+            ),
+          ),
+
+          // --- الأزرار الفعلية (شفافة) ---
+          Row(
+            children: [
+              _buildToggleButton(
+                context,
+                title: 'الموردين',
+                icon: '🏪', // أيقونة متجر
+                isSelected: isVendorSelected,
+                onTap: () {
+                  setState(() {
+                    _selectedPartyType = 'vendor';
+                  });
+                },
+              ),
+              _buildToggleButton(
+                context,
+                title: 'الأشخاص',
+                icon: '🧑‍🦱', // أيقونة شخص
+                isSelected: !isVendorSelected,
+                onTap: () {
+                  setState(() {
+                    _selectedPartyType = 'person';
+                  });
+                },
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --- ويدجت مساعد لبناء كل زر على حدة ---
+  Widget _buildToggleButton(
+    BuildContext context, {
+    required String title,
+    required String icon,
+    required bool isSelected,
+    required VoidCallback onTap,
+  }) {
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          color: Colors.transparent, // الزر نفسه شفاف ليرى الخلفية المتحركة
+          child: Center(
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  icon,
+                  style: const TextStyle(fontSize: 20),
+                ), // استخدام Text للأيقونات الرمزية
+                const SizedBox(width: 8),
+                Text(
+                  title,
+                  style: TextStyle(
+                    color: isSelected ? Colors.white : Colors.black87,
+                    fontWeight: FontWeight.bold,
+                    fontFamily: 'Tajawal',
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// ويدجت لعرض قائمة الأطراف مع أرصدتهم
+class PartiesListView extends StatefulWidget {
+  final String partyType;
+
+  const PartiesListView({super.key, required this.partyType});
+
+  @override
+  State<PartiesListView> createState() => _PartiesListViewState();
+}
+
+class _PartiesListViewState extends State<PartiesListView> {
+  List<Party> parties = [];
+  Map<int, double> balances = {};
+  bool isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPartiesAndBalances();
+  }
+
+  /// تحديث البيانات (يستدعى من النماذج الخارجية)
+  void refreshData() {
+    _loadPartiesAndBalances();
+  }
+
+  /// تحميل الأطراف وحساب أرصدتهم
+  Future<void> _loadPartiesAndBalances() async {
+    try {
+      final loadedParties = await DatabaseHelper.instance.getParties(
+        widget.partyType,
+      );
+      final Map<int, double> loadedBalances = {};
+
+      for (Party party in loadedParties) {
+        final balance = await DatabaseHelper.instance.getPartyBalance(
+          party.id!,
+        );
+        loadedBalances[party.id!] = balance;
+      }
+
+      setState(() {
+        parties = loadedParties;
+        balances = loadedBalances;
+        isLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        isLoading = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('خطأ في تحميل البيانات: $e')));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (parties.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              widget.partyType == 'vendor' ? Icons.store : Icons.person,
+              size: 64,
+              color: Colors.grey,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'لا يوجد ${widget.partyType == 'vendor' ? 'موردين' : 'أشخاص'} حالياً',
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(color: Colors.grey),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      itemCount: parties.length,
+      itemBuilder: (context, index) {
+        final party = parties[index];
+        final balance = balances[party.id!] ?? 0.0;
+        final isPositive = balance > 0;
+        final isZero = balance == 0;
+
+        // تسجيل للتحقق من القيم
+        print(
+          'Party: ${party.name}, Type: ${party.type}, Widget Type: ${widget.partyType}',
+        );
+
+        return Card(
+          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          child: Column(
+            children: [
+              ListTile(
+                leading: CircleAvatar(
+                  backgroundColor: isZero
+                      ? Colors.grey
+                      : isPositive
+                      ? Colors.red.shade100
+                      : Colors.green.shade100,
+                  child: Icon(
+                    widget.partyType == 'vendor' ? Icons.store : Icons.person,
+                    color: isZero
+                        ? Colors.grey.shade600
+                        : isPositive
+                        ? Colors.red.shade700
+                        : Colors.green.shade700,
+                  ),
+                ),
+                title: Text(
+                  party.name,
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                subtitle: party.phone != null && party.phone!.isNotEmpty
+                    ? Text(party.phone!)
+                    : null,
+                trailing: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      '${balance.abs().toStringAsFixed(2)} ج.م',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                        color: isZero
+                            ? Colors.grey
+                            : isPositive
+                            ? Colors.red
+                            : Colors.green,
+                      ),
+                    ),
+                    Text(
+                      isZero
+                          ? 'متوازن'
+                          : isPositive
+                          ? (widget.partyType == 'vendor'
+                                ? 'مستحق له'
+                                : 'مستحق منه')
+                          : (widget.partyType == 'vendor'
+                                ? 'مستحق منه'
+                                : 'مستحق له'),
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade600,
+                      ),
+                    ),
+                  ],
+                ),
+                onTap: () {
+                  // التنقل إلى صفحة تفاصيل الطرف
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (context) => PartyDetailsScreen(
+                        party: party,
+                        initialBalance: balance,
+                      ),
+                    ),
+                  );
+                },
+              ),
+              // الأزرار السفلية حسب نوع الطرف
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                child: Row(children: _getButtonsForParty(party)),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  /// تحديد الأزرار المناسبة حسب نوع الطرف
+  List<Widget> _getButtonsForParty(Party party) {
+    // التحقق من نوع الطرف من نوع التبويب أولاً (هذا هو الصحيح)
+    final isVendor = widget.partyType == 'vendor';
+
+    if (isVendor) {
+      return [
+        // أزرار الموردين: شراء وتسديد
+        Expanded(
+          child: FilledButton.icon(
+            onPressed: () => _handlePurchaseAction(context, party),
+            icon: const Icon(Icons.shopping_cart, size: 20),
+            label: const Text('شراء'),
+            style: ActionButtonStyles.redActionStyle.copyWith(
+              minimumSize: WidgetStateProperty.all(const Size(0, 52)),
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: FilledButton.icon(
+            onPressed: () => _handlePaymentAction(context, party),
+            icon: const Icon(Icons.payment, size: 20),
+            label: const Text('تسديد'),
+            style: ActionButtonStyles.greenActionStyle.copyWith(
+              minimumSize: WidgetStateProperty.all(const Size(0, 52)),
+            ),
+          ),
+        ),
+      ];
+    } else {
+      return [
+        // أزرار الأشخاص: إقراض واستلام
+        Expanded(
+          child: FilledButton.icon(
+            onPressed: () => _handleLoanAction(context, party),
+            icon: const Icon(Icons.arrow_upward, size: 20),
+            label: const Text('إقراض'),
+            style: ActionButtonStyles.redActionStyle.copyWith(
+              minimumSize: WidgetStateProperty.all(const Size(0, 52)),
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: FilledButton.icon(
+            onPressed: () => _handleReceiveAction(context, party),
+            icon: const Icon(Icons.arrow_downward, size: 20),
+            label: const Text('استلام'),
+            style: ActionButtonStyles.greenActionStyle.copyWith(
+              minimumSize: WidgetStateProperty.all(const Size(0, 52)),
+            ),
+          ),
+        ),
+      ];
+    }
+  }
+
+  /// معالج زر الشراء للموردين
+  void _handlePurchaseAction(BuildContext context, Party party) {
+    showDebtTransactionModal(
+      context: context,
+      party: party,
+      transactionKind: 'purchase_credit',
+      onTransactionSaved: refreshData,
+    );
+  }
+
+  /// معالج زر التسديد للموردين
+  void _handlePaymentAction(BuildContext context, Party party) {
+    showDebtTransactionModal(
+      context: context,
+      party: party,
+      transactionKind: 'payment',
+      onTransactionSaved: refreshData,
+    );
+  }
+
+  /// معالج زر الإقراض للأشخاص
+  void _handleLoanAction(BuildContext context, Party party) {
+    showDebtTransactionModal(
+      context: context,
+      party: party,
+      transactionKind: 'loan_out',
+      onTransactionSaved: refreshData,
+    );
+  }
+
+  /// معالج زر الاستلام للأشخاص
+  void _handleReceiveAction(BuildContext context, Party party) {
+    showDebtTransactionModal(
+      context: context,
+      party: party,
+      transactionKind: 'settlement',
+      onTransactionSaved: refreshData,
+    );
+  }
+}
+// lib/presentation/screens/expenses_screen.dart
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart' hide TextDirection;
+import 'package:collection/collection.dart';
+import 'package:flutter_slidable/flutter_slidable.dart';
+import 'package:youssef_fabric_ledger/data/local/database_helper.dart';
+import 'package:youssef_fabric_ledger/data/models/expense.dart';
+import 'package:youssef_fabric_ledger/data/models/category.dart';
+import 'package:youssef_fabric_ledger/presentation/widgets/add_transaction_modal.dart';
+import 'package:youssef_fabric_ledger/presentation/widgets/drawer_history_log.dart';
+import 'package:youssef_fabric_ledger/core/enums.dart';
+
+class ExpensesScreen extends StatefulWidget {
+  const ExpensesScreen({Key? key}) : super(key: key);
+
+  @override
+  _ExpensesScreenState createState() => _ExpensesScreenState();
+}
+
+class _ExpensesScreenState extends State<ExpensesScreen> {
+  // متغير لتخزين الحالة الحالية ('expenses' or 'drawer')
+  String _selectedView = 'expenses';
+
+  @override
+  Widget build(BuildContext context) {
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Scaffold(
+        appBar: AppBar(title: const Text('السجلات المالية')),
+        body: Column(
+          children: [
+            // --- أزرار التبديل الجديدة هنا ---
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: SegmentedButton<String>(
+                style: SegmentedButton.styleFrom(
+                  backgroundColor: Colors.grey.shade200,
+                  foregroundColor: Colors.grey.shade700,
+                  selectedForegroundColor: Colors.white,
+                  selectedBackgroundColor: Theme.of(context).primaryColor,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  textStyle: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    fontFamily: 'Tajawal',
+                  ),
+                ),
+                segments: const [
+                  ButtonSegment(
+                    value: 'expenses',
+                    label: Text('المصروفات'),
+                    icon: Icon(Icons.payment),
+                  ),
+                  ButtonSegment(
+                    value: 'drawer',
+                    label: Text('الدرج'),
+                    icon: Icon(Icons.inbox),
+                  ),
+                ],
+                selected: {_selectedView},
+                onSelectionChanged: (newSelection) {
+                  setState(() {
+                    _selectedView = newSelection.first;
+                  });
+                },
+              ),
+            ),
+
+            // --- عرض المحتوى بناءً على الزر المختار ---
+            Expanded(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 300),
+                child: _selectedView == 'expenses'
+                    ? const ExpensesListView() // عرض قائمة المصروفات
+                    : const DrawerHistoryLog(), // عنصر نائب لسجل الدرج
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// --- فصلنا منطق عرض قائمة المصروفات في ويدجت خاص به ---
+class ExpensesListView extends StatefulWidget {
+  const ExpensesListView({super.key});
+
+  @override
+  _ExpensesListViewState createState() => _ExpensesListViewState();
+}
+
+class _ExpensesListViewState extends State<ExpensesListView> {
+  late Future<List<Expense>> _expensesFuture;
+  String _selectedTimeFilter =
+      'all'; // 'all', 'today', 'week', 'month', 'custom'
+  DateTime? _customStartDate;
+  DateTime? _customEndDate;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadExpenses();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // إعادة تحميل البيانات عند العودة للشاشة
+    _loadExpenses();
+  }
+
+  /// تحميل المصروفات حسب الفلتر المحدد
+  void _loadExpenses() {
+    setState(() {
+      _expensesFuture = _getFilteredExpenses();
+    });
+  }
+
+  // --- ✅ دالة جديدة لإعادة تحميل البيانات ---
+  void _refreshExpenses() {
+    setState(() {
+      _expensesFuture = _getFilteredExpenses();
+    });
+  }
+
+  /// جلب المصروفات المفلترة حسب الفترة الزمنية
+  Future<List<Expense>> _getFilteredExpenses() async {
+    final now = DateTime.now();
+    DateTime? startDate;
+    DateTime? endDate;
+
+    switch (_selectedTimeFilter) {
+      case 'today':
+        startDate = DateTime(now.year, now.month, now.day);
+        endDate = DateTime(now.year, now.month, now.day + 1);
+        break;
+      case 'week':
+        final weekStart = now.subtract(Duration(days: now.weekday - 1));
+        startDate = DateTime(weekStart.year, weekStart.month, weekStart.day);
+        endDate = DateTime(now.year, now.month, now.day + 1);
+        break;
+      case 'month':
+        startDate = DateTime(now.year, now.month, 1);
+        endDate = DateTime(now.year, now.month + 1, 1);
+        break;
+      case 'custom':
+        if (_customStartDate != null && _customEndDate != null) {
+          startDate = _customStartDate;
+          endDate = DateTime(
+            _customEndDate!.year,
+            _customEndDate!.month,
+            _customEndDate!.day + 1,
+          );
+        }
+        break;
+      default:
+        return DatabaseHelper.instance.getExpensesForDateRange(
+          DateTime(2000),
+          DateTime.now().add(const Duration(days: 1)),
+        );
+    }
+
+    if (startDate != null && endDate != null) {
+      return DatabaseHelper.instance.getExpensesForDateRange(
+        startDate,
+        endDate,
+      );
+    }
+    return DatabaseHelper.instance.getExpensesForDateRange(
+      DateTime(2000),
+      DateTime.now().add(const Duration(days: 1)),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        // فلاتر الوقت
+        Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: _buildTimeFilters(context),
+        ),
+        // قائمة المصروفات
+        Expanded(
+          child: FutureBuilder<List<Expense>>(
+            future: _expensesFuture,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                return const Center(
+                  child: Text('لم يتم تسجيل أي مصروفات بعد.'),
+                );
+              }
+
+              final expenses = snapshot.data!;
+              // استخدام groupBy لتجميع المصروفات حسب اليوم
+              final groupedExpenses = groupBy(
+                expenses,
+                (Expense e) => DateFormat('yyyy-MM-dd').format(e.date),
+              );
+
+              return ListView.builder(
+                itemCount: groupedExpenses.keys.length,
+                itemBuilder: (context, index) {
+                  final dateKey = groupedExpenses.keys.elementAt(index);
+                  final expensesForDay = groupedExpenses[dateKey]!;
+                  final date = DateTime.parse(dateKey);
+
+                  return _buildDaySection(context, date, expensesForDay);
+                },
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// بناء فلاتر الوقت
+  Widget _buildTimeFilters(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Theme.of(context).primaryColor,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        children: [
+          // أزرار الفلاتر الأساسية
+          Row(
+            children: [
+              Expanded(
+                child: _buildFilterButton(
+                  context,
+                  'الكل',
+                  'all',
+                  _selectedTimeFilter == 'all',
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _buildFilterButton(
+                  context,
+                  'اليوم',
+                  'today',
+                  _selectedTimeFilter == 'today',
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _buildFilterButton(
+                  context,
+                  'الأسبوع',
+                  'week',
+                  _selectedTimeFilter == 'week',
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _buildFilterButton(
+                  context,
+                  'الشهر',
+                  'month',
+                  _selectedTimeFilter == 'month',
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          // زر التاريخ المخصص
+          SizedBox(
+            width: double.infinity,
+            child: _buildFilterButton(
+              context,
+              _getCustomDateText(),
+              'custom',
+              _selectedTimeFilter == 'custom',
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// بناء زر فلتر واحد
+  Widget _buildFilterButton(
+    BuildContext context,
+    String title,
+    String value,
+    bool isSelected,
+  ) {
+    return GestureDetector(
+      onTap: () {
+        if (value == 'custom') {
+          _showCustomDatePicker(context);
+        } else {
+          setState(() {
+            _selectedTimeFilter = value;
+          });
+          _loadExpenses();
+        }
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+        decoration: BoxDecoration(
+          color: isSelected ? Colors.white : Colors.white.withOpacity(0.2),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Text(
+          title,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: isSelected ? Theme.of(context).primaryColor : Colors.white,
+            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+            fontSize: 14,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// الحصول على نص التاريخ المخصص
+  String _getCustomDateText() {
+    if (_customStartDate != null && _customEndDate != null) {
+      final formatter = DateFormat('dd/MM/yyyy', 'ar');
+      return '${formatter.format(_customStartDate!)} - ${formatter.format(_customEndDate!)}';
+    }
+    return 'تاريخ محدد';
+  }
+
+  /// عرض منتقي التاريخ المخصص
+  Future<void> _showCustomDatePicker(BuildContext context) async {
+    final DateTimeRange? picked = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now(),
+      initialDateRange: _customStartDate != null && _customEndDate != null
+          ? DateTimeRange(start: _customStartDate!, end: _customEndDate!)
+          : null,
+      locale: const Locale('ar'),
+    );
+
+    if (picked != null) {
+      setState(() {
+        _customStartDate = picked.start;
+        _customEndDate = picked.end;
+        _selectedTimeFilter = 'custom';
+      });
+      _loadExpenses();
+    }
+  }
+
+  // ويدجت لعرض قسم اليوم الواحد
+  Widget _buildDaySection(
+    BuildContext context,
+    DateTime date,
+    List<Expense> expenses,
+  ) {
+    final total = expenses.fold<double>(0, (sum, item) => sum + item.amount);
+    final currencyFormat = NumberFormat.currency(locale: 'ar', symbol: 'د.ج');
+
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 8),
+      elevation: 1,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Column(
+        children: [
+          // رأس اليوم
+          Padding(
+            padding: const EdgeInsets.all(12.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  DateFormat.yMMMMEEEEd('ar').format(date),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+                Text(
+                  currencyFormat.format(total),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                    color: Colors.red,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          // قائمة مصروفات اليوم
+          ...expenses
+              .map(
+                (expense) => ExpenseItem(
+                  expense: expense,
+                  onUpdate: _refreshExpenses, // تمرير الدالة
+                ),
+              )
+              .toList(),
+        ],
+      ),
+    );
+  }
+}
+
+// ويدجت لعرض عنصر المصروف الواحد
+class ExpenseItem extends StatelessWidget {
+  final Expense expense;
+  final VoidCallback onUpdate; // لاستقبال دالة التحديث
+
+  const ExpenseItem({required this.expense, required this.onUpdate, super.key});
+
+  // دالة الحذف
+  Future<void> _delete(BuildContext context) async {
+    await DatabaseHelper.instance.deleteExpense(expense.id!);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('تم حذف المصروف'),
+        backgroundColor: Colors.red,
+      ),
+    );
+    // استدعاء دالة التحديث لإعادة تحميل القائمة
+    onUpdate();
+  }
+
+  // --- ✅ تفعيل دالة التعديل ---
+  void _edit(BuildContext context) async {
+    // افتح نافذة الإضافة/التعديل وقم بتمرير المصروف الحالي
+    final result = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => AddTransactionModal(expenseToEdit: expense),
+    );
+
+    // إذا تم الحفظ بنجاح (أُرجعت true)، قم بتحديث القائمة
+    if (result == true) {
+      onUpdate();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final currencyFormat = NumberFormat.currency(locale: 'ar', symbol: 'د.ج');
+
+    return Slidable(
+      key: ValueKey(expense.id),
+      // --- الأزرار التي تظهر على اليسار عند السحب ---
+      startActionPane: ActionPane(
+        motion: const DrawerMotion(),
+        children: [
+          SlidableAction(
+            onPressed: (ctx) => _delete(context),
+            backgroundColor: Colors.red,
+            foregroundColor: Colors.white,
+            icon: Icons.delete,
+            label: 'حذف',
+            borderRadius: BorderRadius.circular(12),
+          ),
+          SlidableAction(
+            onPressed: _edit,
+            backgroundColor: Colors.blue,
+            foregroundColor: Colors.white,
+            icon: Icons.edit,
+            label: 'تعديل',
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ],
+      ),
+      child: FutureBuilder<Category?>(
+        future: DatabaseHelper.instance.getCategoryById(expense.categoryId),
+        builder: (context, snapshot) {
+          final categoryName = snapshot.hasData ? snapshot.data!.name : '...';
+          final categoryIcon = snapshot.hasData
+              ? IconData(
+                  snapshot.data!.iconCodePoint,
+                  fontFamily: 'MaterialIcons',
+                )
+              : Icons.label_outline;
+
+          final sourceMap = {
+            TransactionSource.cash.name: 'من الكاش',
+            TransactionSource.drawer.name: 'من الدرج',
+            TransactionSource.bank.name: 'من البنك',
+          };
+
+          return ListTile(
+            leading: CircleAvatar(child: Icon(categoryIcon, size: 20)),
+            title: Text(categoryName),
+            subtitle: Text(
+              expense.note ??
+                  'مصدره: ${sourceMap[expense.source.name] ?? expense.source.name}',
+            ),
+            trailing: Text(
+              currencyFormat.format(expense.amount),
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+// lib/presentation/screens/drawer_screen.dart
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import 'package:provider/provider.dart';
+import 'package:youssef_fabric_ledger/core/enums.dart';
+import 'package:youssef_fabric_ledger/logic/providers/date_provider.dart';
+import 'package:youssef_fabric_ledger/logic/providers/finance_provider.dart';
+
+class DrawerScreen extends StatefulWidget {
+  const DrawerScreen({super.key});
+
+  @override
+  State<DrawerScreen> createState() => _DrawerScreenState();
+}
+
+class _DrawerScreenState extends State<DrawerScreen> {
+  final _formKey = GlobalKey<FormState>();
+  late TextEditingController _startBalanceController;
+  late TextEditingController _endBalanceController;
+  late FinanceProvider _financeProvider;
+  late DateProvider _dateProvider;
+
+  @override
+  void initState() {
+    super.initState();
+    _financeProvider = Provider.of<FinanceProvider>(context, listen: false);
+    _dateProvider = Provider.of<DateProvider>(context, listen: false);
+    final startSnapshot = _financeProvider.drawerSnapshots['start'];
+    final endSnapshot = _financeProvider.drawerSnapshots['end'];
+
+    _startBalanceController = TextEditingController(
+      text: startSnapshot?.cashAmount.toString() ?? '',
+    );
+    _endBalanceController = TextEditingController(
+      text: endSnapshot?.cashAmount.toString() ?? '',
+    );
+  }
+
+  @override
+  void dispose() {
+    _startBalanceController.dispose();
+    _endBalanceController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _saveSnapshots() async {
+    if (_formKey.currentState!.validate()) {
+      final startAmount = double.tryParse(_startBalanceController.text) ?? 0.0;
+      final endAmount = double.tryParse(_endBalanceController.text) ?? 0.0;
+      final date = _dateProvider.selectedDate;
+
+      // Save start balance
+      await _financeProvider.saveDrawerSnapshot(
+        date: date,
+        type: SnapshotType.start,
+        amount: startAmount,
+      );
+
+      // Save end balance
+      await _financeProvider.saveDrawerSnapshot(
+        date: date,
+        type: SnapshotType.end,
+        amount: endAmount,
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تم حفظ بيانات الدرج بنجاح')),
+        );
+        Navigator.of(context).pop();
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          'إدارة درج يوم ${DateFormat.yMMMd('ar').format(_dateProvider.selectedDate)}',
+        ),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Form(
+          key: _formKey,
+          child: ListView(
+            children: [
+              _buildBalanceCard(),
+              const SizedBox(height: 24),
+              _buildSummaryCard(),
+              const SizedBox(height: 32),
+              ElevatedButton(
+                onPressed: _saveSnapshots,
+                child: const Text('حفظ التغييرات'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBalanceCard() {
+    return Card(
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('أرصدة الدرج', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: _startBalanceController,
+              decoration: const InputDecoration(
+                labelText: 'رصيد بداية اليوم',
+                prefixIcon: Icon(Icons.wb_sunny_outlined),
+              ),
+              keyboardType: TextInputType.number,
+              validator: (value) {
+                if (value == null || value.isEmpty) {
+                  return 'يرجى إدخال رصيد بداية اليوم';
+                }
+                if (double.tryParse(value) == null) {
+                  return 'يرجى إدخال رقم صحيح';
+                }
+                return null;
+              },
+            ),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: _endBalanceController,
+              decoration: const InputDecoration(
+                labelText: 'رصيد نهاية اليوم',
+                prefixIcon: Icon(Icons.nightlight_round),
+              ),
+              keyboardType: TextInputType.number,
+              validator: (value) {
+                if (value == null || value.isEmpty) {
+                  return 'يرجى إدخال رصيد نهاية اليوم';
+                }
+                if (double.tryParse(value) == null) {
+                  return 'يرجى إدخال رقم صحيح';
+                }
+                return null;
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSummaryCard() {
+    return Consumer<FinanceProvider>(
+      builder: (context, provider, child) {
+        final turnover = provider.calculatedTurnover;
+        final sales = provider.totalIncome;
+        return Card(
+          elevation: 2,
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'ملخص اليوم',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 16),
+                ListTile(
+                  leading: const Icon(Icons.sync_alt, color: Colors.blue),
+                  title: const Text('دورة رأس المال (Turnover)'),
+                  trailing: Text(
+                    NumberFormat.currency(
+                      locale: 'ar_EG',
+                      symbol: 'ج.م',
+                    ).format(turnover),
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.point_of_sale, color: Colors.green),
+                  title: const Text('إجمالي الدخل (المبيعات)'),
+                  trailing: Text(
+                    NumberFormat.currency(
+                      locale: 'ar_EG',
+                      symbol: 'ج.م',
+                    ).format(sales),
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+// lib/presentation/screens/settings_screen.dart
+import 'package:flutter/material.dart';
+import 'package:youssef_fabric_ledger/presentation/screens/manage_categories_screen.dart';
+
+class SettingsScreen extends StatelessWidget {
+  const SettingsScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Scaffold(
+        appBar: AppBar(title: const Text('الإعدادات')),
+        body: ListView(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.category_outlined),
+              title: const Text('إدارة الفئات'),
+              subtitle: const Text('إضافة وتعديل فئات المصروفات والدخل'),
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (context) => const ManageCategoriesScreen(),
+                  ),
+                );
+              },
+            ),
+            // يمكنك إضافة المزيد من الإعدادات هنا لاحقاً
+          ],
+        ),
+      ),
+    );
+  }
+}
+// lib/presentation/screens/manage_categories_screen.dart
+import 'package:flutter/material.dart';
+import 'package:flutter_iconpicker/flutter_iconpicker.dart';
+import 'package:youssef_fabric_ledger/data/local/database_helper.dart';
+import 'package:youssef_fabric_ledger/data/models/category.dart';
+
+class ManageCategoriesScreen extends StatefulWidget {
+  const ManageCategoriesScreen({super.key});
+
+  @override
+  ManageCategoriesScreenState createState() => ManageCategoriesScreenState();
+}
+
+class ManageCategoriesScreenState extends State<ManageCategoriesScreen> {
+  late Future<List<Category>> _categoriesFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCategories();
+  }
+
+  void _loadCategories() {
+    setState(() {
+      _categoriesFuture = DatabaseHelper.instance.getCategories('expense');
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Scaffold(
+        appBar: AppBar(title: const Text('إدارة الفئات')),
+        body: FutureBuilder<List<Category>>(
+          future: _categoriesFuture,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            if (!snapshot.hasData || snapshot.data!.isEmpty) {
+              return const Center(
+                child: Text('لا توجد فئات. قم بإضافة فئة جديدة.'),
+              );
+            }
+
+            final categories = snapshot.data!;
+            return ListView.builder(
+              itemCount: categories.length,
+              itemBuilder: (context, index) {
+                final category = categories[index];
+                return ListTile(
+                  leading: Icon(
+                    IconData(
+                      category.iconCodePoint,
+                      fontFamily: 'MaterialIcons',
+                    ),
+                  ),
+                  title: Text(category.name),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.edit_outlined),
+                        onPressed: () =>
+                            _showCategoryDialog(category: category),
+                      ),
+                      IconButton(
+                        icon: const Icon(
+                          Icons.delete_outline,
+                          color: Colors.red,
+                        ),
+                        onPressed: () => _deleteCategory(category.id!),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            );
+          },
+        ),
+        floatingActionButton: FloatingActionButton(
+          onPressed: () => _showCategoryDialog(),
+          child: const Icon(Icons.add),
+        ),
+      ),
+    );
+  }
+
+  void _showCategoryDialog({Category? category}) {
+    final isEditing = category != null;
+    final nameController = TextEditingController(text: category?.name);
+    IconData? selectedIcon = isEditing
+        ? IconData(category.iconCodePoint, fontFamily: 'MaterialIcons')
+        : null;
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: Text(isEditing ? 'تعديل الفئة' : 'فئة جديدة'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: nameController,
+                    decoration: const InputDecoration(labelText: 'اسم الفئة'),
+                    autofocus: true,
+                  ),
+                  const SizedBox(height: 20),
+                  Row(
+                    children: [
+                      const Text("الأيقونة: "),
+                      const Spacer(),
+                      if (selectedIcon != null) Icon(selectedIcon),
+                      const SizedBox(width: 10),
+                      ElevatedButton(
+                        child: const Text('اختر'),
+                        onPressed: () async {
+                          final picked = await showIconPicker(context);
+                          if (picked != null) {
+                            setDialogState(() {
+                              selectedIcon = picked.data; // IconData
+                            });
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  child: const Text('إلغاء'),
+                  onPressed: () => Navigator.of(context).pop(),
+                ),
+                FilledButton(
+                  child: const Text('حفظ'),
+                  onPressed: () async {
+                    if (nameController.text.isEmpty) {
+                      // يمكنك إظهار رسالة خطأ هنا إذا أردت
+                      return;
+                    }
+
+                    // 2. إذا لم يتم اختيار أيقونة، قم بتعيين أيقونة افتراضية
+                    final finalIcon = selectedIcon ?? Icons.label_outline;
+
+                    final newCategory = Category(
+                      id: category?.id,
+                      name: nameController.text,
+                      iconCodePoint:
+                          finalIcon.codePoint, // استخدم الأيقونة النهائية
+                      type: 'expense',
+                    );
+
+                    if (isEditing) {
+                      await DatabaseHelper.instance.updateCategory(newCategory);
+                    } else {
+                      await DatabaseHelper.instance.createCategory(newCategory);
+                    }
+
+                    if (mounted) {
+                      _loadCategories(); // لتحديث القائمة
+                      Navigator.of(context).pop();
+                    }
+                  },
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _deleteCategory(int id) async {
+    // يمكنك إضافة نافذة تأكيد هنا
+    await DatabaseHelper.instance.deleteCategory(id);
+    _loadCategories();
+  }
+}
+// lib/presentation/screens/main_layout.dart
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:youssef_fabric_ledger/presentation/screens/expenses_screen.dart';
+import 'package:youssef_fabric_ledger/presentation/screens/home_screen.dart';
+import 'package:youssef_fabric_ledger/presentation/screens/debts_screen.dart';
+import 'package:youssef_fabric_ledger/presentation/widgets/add_transaction_modal.dart';
+import 'package:youssef_fabric_ledger/logic/providers/finance_provider.dart';
+
+class MainLayout extends StatefulWidget {
+  const MainLayout({super.key});
+  @override
+  State<MainLayout> createState() => _MainLayoutState();
+}
+
+class _MainLayoutState extends State<MainLayout> {
+  final PageController _pageController = PageController();
+  int _currentIndex = 0;
+  Key _expensesKey = UniqueKey(); // مفتاح فريد لشاشة المصروفات
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  void _onTabTapped(int index) {
+    setState(() {
+      _currentIndex = index;
+    });
+    _pageController.jumpToPage(index);
+  }
+
+  /// الدالة التي تفتح النافذة المنبثقة من الأسفل لإضافة مصروف جديد
+  void _showAddTransactionModal() async {
+    // 1. انتظر النتيجة من النافذة المنبثقة
+    final result = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => AddTransactionModal(),
+    );
+
+    // 2. إذا كانت النتيجة 'true' (يعني تم الحفظ بنجاح)، قم بتحديث البيانات
+    if (result == true && mounted) {
+      // استدعاء دالة التحديث في الـ Provider
+      context.read<FinanceProvider>().refreshTodayData();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Scaffold(
+        body: PageView(
+          controller: _pageController,
+          onPageChanged: (index) {
+            setState(() {
+              _currentIndex = index;
+            });
+          },
+          children: <Widget>[
+            const HomeScreen(),
+            ExpensesScreen(
+              key: _expensesKey,
+            ), // Expenses Screen with unique key
+            const DebtsScreen(), // Debts Screen
+            const Center(child: Text('التقارير')), // Reports Screen
+          ],
+        ),
+        floatingActionButton: FloatingActionButton(
+          onPressed: _showAddTransactionModal, // استدعاء الدالة هنا
+          shape: const CircleBorder(),
+          child: const Icon(Icons.add),
+        ),
+        floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
+        bottomNavigationBar: BottomAppBar(
+          shape: const CircularNotchedRectangle(),
+          notchMargin: 8.0,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: <Widget>[
+              _buildNavItem(Icons.home, 'الرئيسية', 0),
+              _buildNavItem(Icons.wallet, 'المصروفات', 1),
+              const SizedBox(width: 48), // Spacer for the FAB
+              _buildNavItem(Icons.people_alt, 'الديون', 2),
+              _buildNavItem(Icons.bar_chart, 'التقارير', 3),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNavItem(IconData icon, String label, int index) {
+    final isSelected = _currentIndex == index;
+    final color = isSelected ? Theme.of(context).primaryColor : Colors.grey;
+    return IconButton(
+      icon: Icon(icon, color: color),
+      onPressed: () => _onTabTapped(index),
+      tooltip: label,
+    );
+  }
+}
+// lib/presentation/screens/party_details_screen.dart
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart'
+    as intl
+    hide TextDirection; // <-- تجنّب تضارب TextDirection
+import 'package:youssef_fabric_ledger/data/local/database_helper.dart';
+import 'package:youssef_fabric_ledger/data/models/debt_entry.dart';
+import 'package:youssef_fabric_ledger/data/models/party.dart';
+import '../widgets/debt_action_bar.dart';
+import '../widgets/debt_transaction_modal.dart';
+
+class PartyDetailsScreen extends StatefulWidget {
+  final Party party;
+  final double initialBalance;
+
+  const PartyDetailsScreen({
+    required this.party,
+    required this.initialBalance,
+    super.key,
+  });
+
+  @override
+  State<PartyDetailsScreen> createState() => _PartyDetailsScreenState();
+}
+
+class _PartyDetailsScreenState extends State<PartyDetailsScreen> {
+  Future<List<DebtEntry>>? _entriesFuture;
+  
+  @override
+  void initState() {
+    super.initState();
+    _reload();
+  }
+  
+  /// إعادة تحميل البيانات
+  void _reload() {
+    setState(() {
+      _entriesFuture = DatabaseHelper.instance.getDebtEntriesForParty(widget.party.id!);
+    });
+  }
+  
+  /// حساب الرصيد من قائمة المعاملات
+  double _computeBalance(List<DebtEntry> entries, Party party) {
+    double balance = 0.0;
+    final bool isVendor = party.type == 'vendor';
+    
+    for (final entry in entries) {
+      if (isVendor) {
+        // للموردين: الشراء والإقراض يزيد ما أدين به (موجب)
+        // التسديد والاستلام ينقص (سالب)
+        if (entry.kind == 'purchase_credit' || entry.kind == 'loan_out') {
+          balance += entry.amount;
+        } else if (entry.kind == 'payment' || entry.kind == 'settlement') {
+          balance -= entry.amount;
+        }
+      } else {
+        // للأشخاص: الإقراض والشراء يزيد ما يدينون لي (موجب)
+        // التسديد والاستلام ينقص (سالب)
+        if (entry.kind == 'loan_out' || entry.kind == 'purchase_credit') {
+          balance += entry.amount;
+        } else if (entry.kind == 'payment' || entry.kind == 'settlement') {
+          balance -= entry.amount;
+        }
+      }
+    }
+    
+    return balance;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final currencyFormat = intl.NumberFormat.currency(
+      locale: 'en',
+      symbol: 'د.ج',
+    );
+    final bool isVendor = widget.party.type == 'vendor';
+
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(widget.party.name),
+        ),
+        body: Column(
+          children: [
+            // استخدام FutureBuilder واحد للبيانات والرصيد
+            Expanded(
+              child: FutureBuilder<List<DebtEntry>>(
+                future: _entriesFuture,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  
+                  final entries = snapshot.data ?? [];
+                  final currentBalance = _computeBalance(entries, widget.party);
+                  
+                  return Column(
+                    children: [
+                      // بطاقة الرصيد
+                      _buildBalanceCard(context, currencyFormat, isVendor, currentBalance),
+                      // قسم المعاملات
+                      if (entries.isEmpty)
+                        Expanded(child: _buildEmptyState())
+                      else ...[
+                        // عنوان قسم المعاملات
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          child: Text(
+                            'المعاملات (${entries.length})',
+                            textAlign: TextAlign.right,
+                            style: TextStyle(
+                              color: Theme.of(context).primaryColor,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        // قائمة المعاملات
+                        Expanded(
+                          child: ListView.builder(
+                            padding: const EdgeInsets.symmetric(horizontal: 16),
+                            itemCount: entries.length,
+                            itemBuilder: (context, index) {
+                              final entry = entries[index];
+                              return _buildTransactionCard(entry, currencyFormat);
+                            },
+                          ),
+                        ),
+                      ],
+                    ],
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+        bottomNavigationBar: DebtActionBar(
+          onFirstActionPressed: () => _handleFirstAction(context, isVendor),
+          onSecondActionPressed: () => _handleSecondAction(context, isVendor),
+          isVendor: isVendor,
+        ),
+      ),
+    );
+  }
+
+  /// بطاقة عرض الرصيد
+  Widget _buildBalanceCard(BuildContext context, intl.NumberFormat currencyFormat, bool isVendor, double currentBalance) {
+    // تحديد لون المبلغ والنص المساعد
+    Color amountColor;
+    String helperText;
+    IconData? circularIcon;
+    
+    if (currentBalance == 0) {
+      amountColor = Colors.grey.shade700;
+      helperText = 'لا يوجد رصيد';
+      circularIcon = null;
+    } else if (isVendor) {
+      if (currentBalance > 0) {
+        // مورد + رصيد موجب = أنت مدين له (أحمر)
+        amountColor = Colors.red.shade700;
+        helperText = 'مستحق له';
+        circularIcon = Icons.keyboard_arrow_up;
+      } else {
+        // مورد + رصيد سالب = مستحق لك منه (أخضر)
+        amountColor = Colors.green.shade700;
+        helperText = 'مستحق منه';
+        circularIcon = Icons.keyboard_arrow_down;
+      }
+    } else {
+      if (currentBalance > 0) {
+        // شخص + رصيد موجب = مستحق لك منه (أخضر)
+        amountColor = Colors.green.shade700;
+        helperText = 'مستحق منه';
+        circularIcon = Icons.keyboard_arrow_down;
+      } else {
+        // شخص + رصيد سالب = أنت مدين له (أحمر)
+        amountColor = Colors.red.shade700;
+        helperText = 'مستحق له';
+        circularIcon = Icons.keyboard_arrow_up;
+      }
+    }
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.08),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // تسمية الرصيد
+                Text(
+                  'الرصيد',
+                  style: TextStyle(
+                    color: Theme.of(context).primaryColor,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                // المبلغ
+                Text(
+                  currencyFormat.format(currentBalance.abs()),
+                  style: TextStyle(
+                    color: amountColor,
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                // النص المساعد
+                Text(
+                  helperText,
+                  style: TextStyle(
+                    color: Colors.grey.shade600,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // الأيقونة الدائرية
+          if (circularIcon != null)
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: amountColor.withOpacity(0.1),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                circularIcon,
+                color: amountColor,
+                size: 24,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// ويدجت لعرض حالة فارغة عند عدم وجود معاملات
+  Widget _buildEmptyState() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 80), // مساحة للأزرار السفلية
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              widget.party.type == 'vendor' ? Icons.store_outlined : Icons.person_outline,
+              size: 64,
+              color: Colors.grey,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'لا توجد معاملات مع ${widget.party.name}',
+              style: const TextStyle(
+                fontSize: 18,
+                color: Colors.grey,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'ستظهر جميع المعاملات هنا عند إضافتها',
+              style: TextStyle(
+                fontSize: 14,
+                color: Colors.grey,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+
+
+  /// بطاقة عرض المعاملة الواحدة
+  Widget _buildTransactionCard(
+    DebtEntry entry,
+    intl.NumberFormat currencyFormat,
+  ) {
+    // تحديد الأيقونة، اللون، والنص بناءً على نوع المعاملة
+    IconData icon;
+    Color color;
+    String title;
+    String relationText;
+
+    final bool isDebtIncrease =
+        entry.kind == 'purchase_credit' || entry.kind == 'loan_out';
+
+    if (isDebtIncrease) {
+      color = Colors.red;
+      if (widget.party.type == 'vendor') {
+        title = 'شراء بالدين';
+        relationText = 'مستحق لـ ${widget.party.name}';
+      } else {
+        title = 'إقراض مبلغ';
+        relationText = 'مستحق من ${widget.party.name}';
+      }
+      icon = Icons.arrow_upward;
+    } else {
+      color = Colors.green;
+      if (widget.party.type == 'vendor') {
+        title = 'تسديد دفعة';
+        relationText = 'دفع لـ ${widget.party.name}';
+      } else {
+        title = 'استلام دفعة';
+        relationText = 'استلام من ${widget.party.name}';
+      }
+      icon = Icons.arrow_downward;
+    }
+
+    // تنسيق التاريخ بشكل طبيعي مع الأرقام اللاتينية
+    final dateFormat = intl.DateFormat('dd/MM/yyyy', 'en');
+    final formattedDate = dateFormat.format(entry.date);
+
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 8),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.08),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          // الصف العلوي: العنوان والأيقونة
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+              ),
+              Container(
+                width: 32,
+                height: 32,
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  icon,
+                  color: color,
+                  size: 18,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          // المبلغ
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  currencyFormat.format(entry.amount),
+                  style: TextStyle(
+                    color: color,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          // الصف السفلي: التاريخ والرصيد
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  formattedDate,
+                  style: TextStyle(
+                    color: Colors.grey.shade600,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+              Text(
+                relationText,
+                style: TextStyle(
+                  color: Colors.grey.shade600,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+          // عرض الملاحظة إذا كانت موجودة
+          if (entry.note != null && entry.note!.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade100,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.note_alt_outlined,
+                    size: 14,
+                    color: Colors.grey.shade600,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      entry.note!,
+                      style: TextStyle(
+                        color: Colors.grey.shade700,
+                        fontSize: 12,
+                        fontStyle: FontStyle.italic,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+
+
+  /// معالج الزر الأول (شراء للموردين أو إقراض للأشخاص)
+  void _handleFirstAction(BuildContext context, bool isVendor) async {
+    final transactionKind = isVendor ? 'purchase_credit' : 'loan_out';
+    final result = await showDebtTransactionModal(
+      context: context,
+      party: widget.party,
+      transactionKind: transactionKind,
+    );
+    
+    if (result == true && mounted) {
+      _reload();
+    }
+  }
+
+  /// معالج الزر الثاني (تسديد للموردين أو استلام للأشخاص)
+  void _handleSecondAction(BuildContext context, bool isVendor) async {
+    final transactionKind = isVendor ? 'payment' : 'settlement';
+    final result = await showDebtTransactionModal(
+      context: context,
+      party: widget.party,
+      transactionKind: transactionKind,
+    );
+    
+    if (result == true && mounted) {
+      _reload();
+    }
+  }
+}
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import 'dart:ui' as ui;
+import 'package:provider/provider.dart';
+import 'package:youssef_fabric_ledger/logic/providers/date_provider.dart';
+import 'package:youssef_fabric_ledger/logic/providers/finance_provider.dart';
+import 'package:youssef_fabric_ledger/presentation/screens/settings_screen.dart';
+
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  @override
+  void initState() {
+    super.initState();
+    // Data is now fetched automatically by the provider when the date changes.
+    // We can trigger an initial fetch here if needed, but it's handled by the provider's constructor.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      context.read<FinanceProvider>().fetchFinancialDataForSelectedDate();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final currencyFormat = NumberFormat.currency(
+      locale: 'ar',
+      symbol: 'د.ج ',
+      decimalDigits: 2,
+    );
+    final dateProvider = context.watch<DateProvider>();
+
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      body: Consumer<FinanceProvider>(
+        builder: (context, financeProvider, child) {
+          return CustomScrollView(
+            slivers: [
+              SliverAppBar(
+                title: const Text('دفتر أقمشة يوسف'),
+                pinned: true,
+                floating: true,
+                actions: [
+                  IconButton(
+                    icon: const Icon(Icons.settings_outlined),
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (context) => const SettingsScreen(),
+                        ),
+                      );
+                    },
+                    tooltip: 'الإعدادات',
+                  ),
+                ],
+                bottom: PreferredSize(
+                  preferredSize: const Size.fromHeight(60.0),
+                  child: Padding(
+                    padding: const EdgeInsets.all(8.0),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        IconButton(
+                          icon: const Icon(
+                            Icons.chevron_left,
+                            color: Colors.white,
+                          ),
+                          onPressed: () => dateProvider.previousDay(),
+                        ),
+                        Text(
+                          DateFormat.yMMMMEEEEd(
+                            'ar',
+                          ).format(dateProvider.selectedDate),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(
+                            Icons.chevron_right,
+                            color: Colors.white,
+                          ),
+                          onPressed: () => dateProvider.nextDay(),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              SliverPadding(
+                padding: const EdgeInsets.all(16.0),
+                sliver: SliverList(
+                  delegate: SliverChildListDelegate([
+                    // إجمالي الرصيد النقدي
+                    _buildEditableBalanceCard(
+                      context,
+                      'إجمالي الرصيد النقدي',
+                      currencyFormat.format(financeProvider.totalCashBalance),
+                      Icons.account_balance,
+                      Colors.purple,
+                    ),
+
+                    // صف 1: مصروفات اليوم + دخل اليوم
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _buildSmallSummaryCard(
+                            'مصروفات اليوم',
+                            currencyFormat.format(
+                              financeProvider.totalExpenses,
+                            ),
+                            Colors.orange,
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: _buildSmallSummaryCard(
+                            'دخل اليوم',
+                            currencyFormat.format(financeProvider.totalIncome),
+                            Colors.teal,
+                          ),
+                        ),
+                      ],
+                    ),
+
+                    // صف 2: ربح اليوم (20%)
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _buildSmallSummaryCard(
+                            'ربح اليوم (20%)',
+                            currencyFormat.format(financeProvider.dailyProfit),
+                            Colors.green,
+                          ),
+                        ),
+                      ],
+                    ),
+
+                    // بطاقة: صافي ربح اليوم = ربح اليوم - مصروفات اليوم
+                    _buildSummaryCard(
+                      'صافي ربح اليوم',
+                      currencyFormat.format(financeProvider.netProfit),
+                      Icons.account_balance_wallet,
+                      Colors.blue,
+                    ),
+
+                    // حالة الدرج
+                    _buildDrawerStatusCard(),
+                  ]),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildEditableBalanceCard(
+    BuildContext context,
+    String title,
+    String value,
+    IconData icon,
+    Color color,
+  ) {
+    return Card(
+      elevation: 4.0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Row(
+              children: [
+                Icon(icon, size: 40, color: color),
+                const SizedBox(width: 16),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: Theme.of(context).textTheme.titleLarge),
+                    Directionality(
+                      textDirection: ui.TextDirection.rtl,
+                      child: Text(
+                        value,
+                        style: const TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            IconButton(
+              icon: const Icon(Icons.edit, color: Colors.grey),
+              onPressed: () => _showEditBalanceDialog(context),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSummaryCard(
+    String title,
+    String value,
+    IconData icon,
+    Color color,
+  ) {
+    return Card(
+      elevation: 4.0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      margin: const EdgeInsets.symmetric(vertical: 8.0),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Row(
+          children: [
+            Icon(icon, size: 40, color: color),
+            const SizedBox(width: 16),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: Theme.of(context).textTheme.titleLarge),
+                Directionality(
+                  textDirection: ui.TextDirection.rtl,
+                  child: Text(
+                    value,
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSmallSummaryCard(String title, String value, Color color) {
+    return Card(
+      elevation: 2.0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      margin: const EdgeInsets.symmetric(vertical: 8.0),
+      child: Padding(
+        padding: const EdgeInsets.all(12.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Directionality(
+              textDirection: ui.TextDirection.rtl,
+              child: Text(
+                value,
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: color,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDrawerStatusCard() {
+    return Consumer<FinanceProvider>(
+      builder: (context, financeProvider, child) {
+        final status = financeProvider.drawerFinalState;
+        final currencyFormat = NumberFormat.currency(
+          locale: 'ar',
+          symbol: 'د.ج ',
+          decimalDigits: 2,
+        );
+
+        return Card(
+          elevation: 4.0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+          margin: const EdgeInsets.symmetric(vertical: 8.0),
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'حالة الدرج النهائية',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    _buildStatusColumn(
+                      'الرصيد الافتتاحي',
+                      currencyFormat.format(status['openingBalance'] ?? 0.0),
+                      Icons.login,
+                      Colors.blueGrey,
+                    ),
+                    _buildStatusColumn(
+                      'الرصيد الختامي',
+                      currencyFormat.format(status['closingBalance'] ?? 0.0),
+                      Icons.logout,
+                      Colors.blueGrey,
+                    ),
+                    _buildStatusColumn(
+                      'الفرق',
+                      currencyFormat.format(status['difference'] ?? 0.0),
+                      (status['difference'] ?? 0.0) >= 0
+                          ? Icons.arrow_upward
+                          : Icons.arrow_downward,
+                      (status['difference'] ?? 0.0) >= 0
+                          ? Colors.green
+                          : Colors.red,
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildStatusColumn(
+    String title,
+    String value,
+    IconData icon,
+    Color color,
+  ) {
+    return Column(
+      children: [
+        Icon(icon, color: color, size: 30),
+        const SizedBox(height: 8),
+        Text(
+          title,
+          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+        ),
+        const SizedBox(height: 4),
+        Directionality(
+          textDirection: ui.TextDirection.rtl,
+          child: Text(
+            value,
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+              color: color,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _showEditBalanceDialog(BuildContext context) {
+    final financeProvider = Provider.of<FinanceProvider>(
+      context,
+      listen: false,
+    );
+    final TextEditingController controller = TextEditingController(
+      text: financeProvider.totalCashBalance.toStringAsFixed(2),
+    );
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('تعديل إجمالي الرصيد النقدي'),
+          content: TextField(
+            controller: controller,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(
+              labelText: 'الرصيد الجديد',
+              prefixText: 'د.ج ',
+            ),
+            textDirection: ui.TextDirection.rtl,
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('إلغاء'),
+            ),
+            TextButton(
+              onPressed: () {
+                final double? newBalance = double.tryParse(controller.text);
+                if (newBalance != null) {
+                  financeProvider.updateTotalCashBalance(newBalance);
+                  Navigator.of(context).pop();
+                }
+              },
+              child: const Text('حفظ'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+import 'package:flutter/material.dart';
+
+/// أنماط الأزرار المشتركة للإجراءات في التطبيق
+class ActionButtonStyles {
+  // الألوان الأساسية
+  static const Color redColor = Color(0xFFE53E3E);
+  static const Color greenColor = Color(0xFF38A169);
+  
+  /// نمط الزر الأحمر للإجراءات مثل الإقراض والشراء
+  static ButtonStyle get redActionStyle {
+    return FilledButton.styleFrom(
+      backgroundColor: redColor,
+      foregroundColor: Colors.white,
+      minimumSize: const Size(double.infinity, 52),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+      ),
+      elevation: 0,
+      shadowColor: Colors.transparent,
+      textStyle: const TextStyle(
+        fontSize: 16,
+        fontWeight: FontWeight.w700,
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+    ).copyWith(
+      overlayColor: WidgetStateProperty.resolveWith<Color?>(
+        (Set<WidgetState> states) {
+          if (states.contains(WidgetState.pressed)) {
+            return Colors.black.withOpacity(0.1);
+          }
+          return null;
+        },
+      ),
+    );
+  }
+  
+  /// نمط الزر الأخضر للإجراءات مثل الاستلام والتسديد
+  static ButtonStyle get greenActionStyle {
+    return FilledButton.styleFrom(
+      backgroundColor: greenColor,
+      foregroundColor: Colors.white,
+      minimumSize: const Size(double.infinity, 52),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+      ),
+      elevation: 0,
+      shadowColor: Colors.transparent,
+      textStyle: const TextStyle(
+        fontSize: 16,
+        fontWeight: FontWeight.w700,
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+    ).copyWith(
+      overlayColor: WidgetStateProperty.resolveWith<Color?>(
+        (Set<WidgetState> states) {
+          if (states.contains(WidgetState.pressed)) {
+            return Colors.black.withOpacity(0.1);
+          }
+          return null;
+        },
+      ),
+    );
+  }
+}// lib/presentation/widgets/parties_list_view.dart
+import 'package:flutter/material.dart';
+import 'package:youssef_fabric_ledger/data/local/database_helper.dart';
+import 'package:youssef_fabric_ledger/data/models/party.dart';
+
+class PartiesListView extends StatefulWidget {
+  final String partyType;
+  const PartiesListView({required this.partyType, super.key});
+
+  @override
+  _PartiesListViewState createState() => _PartiesListViewState();
+}
+
+class _PartiesListViewState extends State<PartiesListView> {
+  late Future<List<Party>> _partiesFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _partiesFuture = DatabaseHelper.instance.getParties(widget.partyType);
+  }
+
+  // --- ✅ التعديل الأهم هنا ---
+  // هذه الدالة السحرية تُستدعى كلما تغير الويدجت الأب
+  // سنستخدمها لإعادة تحميل البيانات عند تغيير partyType
+  @override
+  void didUpdateWidget(PartiesListView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.partyType != widget.partyType) {
+      // إذا تغير نوع الطرف (من vendor إلى person أو العكس)، قم بإعادة تحميل البيانات
+      refreshData();
+    }
+  }
+
+  // --- نهاية التعديل ---
+  // --- ✅ دالة جديدة لتحديث القائمة من الخارج ---
+  void refreshData() {
+    setState(() {
+      _partiesFuture = DatabaseHelper.instance.getParties(widget.partyType);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<Party>>(
+      future: _partiesFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (!snapshot.hasData || snapshot.data!.isEmpty) {
+          // --- تعديل بسيط هنا لتحسين رسالة الحالة الفارغة ---
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  widget.partyType == 'vendor'
+                      ? Icons.store_outlined
+                      : Icons.person_outline,
+                  size: 64,
+                  color: Colors.grey.shade400,
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'لا يوجد ${widget.partyType == 'vendor' ? 'موردين' : 'أشخاص'} حالياً',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: Colors.grey.shade600,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'استخدم زر "+" في الأسفل لإضافة أول ${widget.partyType == 'vendor' ? 'مورد' : 'شخص'}.',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodyMedium?.copyWith(color: Colors.grey.shade600),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          );
+        }
+
+        final parties = snapshot.data!;
+        return ListView.builder(
+          // إضافة padding لتجنب تغطية الزر السفلي
+          padding: const EdgeInsets.only(bottom: 90.0),
+          itemCount: parties.length,
+          itemBuilder: (context, index) {
+            final party = parties[index];
+            return PartyBalanceCard(party: party);
+          },
+        );
+      },
+    );
+  }
+}
+
+/// ويدجت لعرض بطاقة الطرف مع رصيده
+class PartyBalanceCard extends StatefulWidget {
+  final Party party;
+
+  const PartyBalanceCard({super.key, required this.party});
+
+  @override
+  State<PartyBalanceCard> createState() => _PartyBalanceCardState();
+}
+
+class _PartyBalanceCardState extends State<PartyBalanceCard> {
+  double balance = 0.0;
+  bool isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadBalance();
+  }
+
+  /// تحميل رصيد الطرف
+  Future<void> _loadBalance() async {
+    try {
+      final partyBalance = await DatabaseHelper.instance.getPartyBalance(
+        widget.party.id!,
+      );
+      setState(() {
+        balance = partyBalance;
+        isLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        isLoading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isPositive = balance > 0;
+    final isZero = balance == 0;
+
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: ListTile(
+        leading: CircleAvatar(
+          backgroundColor: isZero
+              ? Colors.grey
+              : isPositive
+              ? Colors.red.shade100
+              : Colors.green.shade100,
+          child: Icon(
+            widget.party.type == 'vendor' ? Icons.store : Icons.person,
+            color: isZero
+                ? Colors.grey.shade600
+                : isPositive
+                ? Colors.red.shade700
+                : Colors.green.shade700,
+          ),
+        ),
+        title: Text(
+          widget.party.name,
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        subtitle: widget.party.phone != null && widget.party.phone!.isNotEmpty
+            ? Text(widget.party.phone!)
+            : null,
+        trailing: isLoading
+            ? const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    '${balance.abs().toStringAsFixed(2)} ج.م',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                      color: isZero
+                          ? Colors.grey
+                          : isPositive
+                          ? Colors.red
+                          : Colors.green,
+                    ),
+                  ),
+                  Text(
+                    isZero
+                        ? 'متوازن'
+                        : isPositive
+                        ? (widget.party.type == 'vendor'
+                              ? 'مستحق له'
+                              : 'مستحق منه')
+                        : (widget.party.type == 'vendor'
+                              ? 'مستحق منه'
+                              : 'مستحق له'),
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                  ),
+                ],
+              ),
+        onTap: () {
+          // يمكن إضافة التنقل إلى تفاصيل الطرف هنا
+        },
+      ),
+    );
+  }
+}
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../../core/enums.dart';
+import '../../data/models/expense.dart';
+import '../../data/models/income.dart';
+import '../../data/models/drawer_snapshot.dart';
+import '../../data/local/database_helper.dart';
+import '../../logic/providers/finance_provider.dart';
+import '../../data/models/category.dart';
+import 'package:intl/intl.dart' hide TextDirection;
+
+class AddTransactionModal extends StatefulWidget {
+  // --- ✅ الإضافة هنا ---
+  final Expense? expenseToEdit; // مصروف اختياري للتعديل
+
+  const AddTransactionModal({this.expenseToEdit, super.key});
+  // --- نهاية الإضافة ---
+
+  @override
+  AddTransactionModalState createState() => AddTransactionModalState();
+}
+
+class AddTransactionModalState extends State<AddTransactionModal>
+    with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+
+  @override
+  void initState() {
+    super.initState();
+    // --- ✅ التعديل هنا: تقليل عدد التبويبات إلى 3 ---
+    _tabController = TabController(length: 3, vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: SizedBox(
+        height: MediaQuery.of(context).size.height * 0.75,
+        child: Column(
+          children: [
+            const SizedBox(height: 12),
+            Container(
+              width: 40,
+              height: 5,
+              decoration: BoxDecoration(
+                color: Colors.grey[300],
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+            const SizedBox(height: 16),
+            // شريط التبويبات
+            TabBar(
+              controller: _tabController,
+              isScrollable: true,
+              tabs: const [
+                // --- ✅ التعديل هنا: إزالة تبويب "ديون" ---
+                Tab(text: "مصروف", icon: Icon(Icons.payment)),
+                Tab(text: "دخل", icon: Icon(Icons.attach_money)),
+                Tab(text: "درج", icon: Icon(Icons.inbox_outlined)),
+              ],
+            ),
+            // محتوى التبويبات
+            Expanded(
+              child: TabBarView(
+                controller: _tabController,
+                children: [
+                  // --- ✅ التعديل هنا: إزالة واجهة "ديون" ---
+                  ExpenseForm(expenseToEdit: widget.expenseToEdit),
+                  const IncomeForm(),
+                  const DrawerForm(),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// نموذج المصروفات
+
+class ExpenseForm extends StatefulWidget {
+  // --- ✅ استقبال المصروف هنا ---
+  final Expense? expenseToEdit;
+  const ExpenseForm({this.expenseToEdit, super.key});
+
+  @override
+  ExpenseFormState createState() => ExpenseFormState();
+}
+
+class ExpenseFormState extends State<ExpenseForm> {
+  final _formKey = GlobalKey<FormState>();
+  final _amountController = TextEditingController();
+  final _noteController = TextEditingController();
+
+  // --- ✅ تعديل المتغيرات ---
+  late DateTime _selectedDate;
+  late TransactionSource _selectedSource;
+  int? _selectedCategoryId;
+  List<Category> _categories = [];
+  bool _isLoading = false;
+  late bool _isEditing; // متغير لتحديد وضع التعديل
+
+  @override
+  void initState() {
+    super.initState();
+    _isEditing = widget.expenseToEdit != null;
+    _initializeFields();
+    _loadCategories();
+  }
+
+  // --- ✅ دالة جديدة لتهيئة الحقول ---
+  void _initializeFields() {
+    if (_isEditing) {
+      final expense = widget.expenseToEdit!;
+      _amountController.text = expense.amount.toString();
+      _noteController.text = expense.note ?? '';
+      _selectedDate = expense.date;
+      _selectedSource = expense.source;
+      _selectedCategoryId = expense.categoryId;
+    } else {
+      _selectedDate = DateTime.now();
+      _selectedSource = TransactionSource.cash;
+    }
+  }
+
+  /// تحميل فئات المصروفات
+  Future<void> _loadCategories() async {
+    try {
+      final categories = await DatabaseHelper.instance.getCategories('expense');
+      setState(() {
+        _categories = categories;
+        if (_categories.isNotEmpty) {
+          _selectedCategoryId = _categories.first.id;
+        }
+      });
+    } catch (e) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('خطأ في تحميل الفئات: $e')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: EdgeInsets.all(16),
+      child: Form(
+        key: _formKey,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // حقل المبلغ
+            TextFormField(
+              controller: _amountController,
+              keyboardType: TextInputType.numberWithOptions(decimal: true),
+              decoration: InputDecoration(
+                labelText: 'المبلغ',
+                prefixIcon: Icon(Icons.attach_money),
+                border: OutlineInputBorder(),
+              ),
+              validator: (value) {
+                if (value == null || value.isEmpty) {
+                  return 'يرجى إدخال المبلغ';
+                }
+                if (double.tryParse(value) == null) {
+                  return 'يرجى إدخال رقم صحيح';
+                }
+                return null;
+              },
+            ),
+            SizedBox(height: 16),
+
+            // اختيار الفئة
+            DropdownButtonFormField<int>(
+              value: _selectedCategoryId,
+              decoration: InputDecoration(
+                labelText: 'الفئة',
+                prefixIcon: Icon(Icons.category),
+                border: OutlineInputBorder(),
+              ),
+              items: _categories.map((category) {
+                return DropdownMenuItem<int>(
+                  value: category.id,
+                  child: Row(
+                    children: [
+                      Icon(
+                        IconData(
+                          category.iconCodePoint,
+                          fontFamily: 'MaterialIcons',
+                        ),
+                      ),
+                      SizedBox(width: 8),
+                      Text(category.name),
+                    ],
+                  ),
+                );
+              }).toList(),
+              onChanged: (value) {
+                setState(() {
+                  _selectedCategoryId = value;
+                });
+              },
+              validator: (value) {
+                if (value == null) {
+                  return 'يرجى اختيار فئة';
+                }
+                return null;
+              },
+            ),
+            SizedBox(height: 16),
+
+            // اختيار المصدر
+            DropdownButtonFormField<TransactionSource>(
+              value: _selectedSource,
+              decoration: const InputDecoration(
+                labelText: 'المصدر',
+                prefixIcon: Icon(Icons.account_balance_wallet),
+                border: OutlineInputBorder(),
+              ),
+              items: const [
+                DropdownMenuItem(
+                  value: TransactionSource.cash,
+                  child: Text('نقدي'),
+                ),
+                DropdownMenuItem(
+                  value: TransactionSource.drawer,
+                  child: Text('درج'),
+                ),
+                DropdownMenuItem(
+                  value: TransactionSource.bank,
+                  child: Text('بنك'),
+                ),
+              ],
+              onChanged: (value) {
+                setState(() {
+                  _selectedSource = value!;
+                });
+              },
+            ),
+            SizedBox(height: 16),
+
+            // اختيار التاريخ
+            ListTile(
+              leading: Icon(Icons.calendar_today),
+              title: Text('التاريخ'),
+              subtitle: Text(
+                '${_selectedDate.day}/${_selectedDate.month}/${_selectedDate.year}',
+              ),
+              onTap: () => _selectDate(context),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+                side: BorderSide(color: Colors.grey),
+              ),
+            ),
+            SizedBox(height: 16),
+
+            // حقل الملاحظة
+            TextFormField(
+              controller: _noteController,
+              maxLines: 3,
+              decoration: InputDecoration(
+                labelText: 'ملاحظة (اختياري)',
+                prefixIcon: Icon(Icons.note),
+                border: OutlineInputBorder(),
+              ),
+            ),
+            SizedBox(height: 24),
+
+            // زر الحفظ
+            ElevatedButton(
+              onPressed: _isLoading ? null : _saveExpense,
+              child: _isLoading
+                  ? CircularProgressIndicator(color: Colors.white)
+                  : Text('حفظ المصروف'),
+              style: ElevatedButton.styleFrom(
+                padding: EdgeInsets.symmetric(vertical: 16),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// اختيار التاريخ
+  Future<void> _selectDate(BuildContext context) async {
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: _selectedDate,
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now(),
+    );
+    if (picked != null && picked != _selectedDate) {
+      setState(() {
+        _selectedDate = picked;
+      });
+    }
+  }
+
+  // --- ✅ تعديل دالة الحفظ ---
+  Future<void> _saveExpense() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      // إنشاء كائن Expense بناءً على وضع الإضافة أو التعديل
+      final expense = Expense(
+        id: _isEditing
+            ? widget.expenseToEdit!.id
+            : null, // استخدم الـ ID القديم عند التعديل
+        date: _selectedDate,
+        amount: double.parse(_amountController.text),
+        categoryId: _selectedCategoryId!,
+        source: _selectedSource,
+        note: _noteController.text.isNotEmpty ? _noteController.text : null,
+        createdAt: _isEditing
+            ? widget.expenseToEdit!.createdAt
+            : DateTime.now(), // احتفظ بتاريخ الإنشاء الأصلي
+      );
+
+      // Use the provider to save the expense
+      await Provider.of<FinanceProvider>(
+        context,
+        listen: false,
+      ).addOrUpdateExpense(expense);
+
+      if (mounted) {
+        Navigator.pop(context, true);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('تم حفظ المصروف بنجاح')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('خطأ في حفظ المصروف: $e')));
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _amountController.dispose();
+    _noteController.dispose();
+    super.dispose();
+  }
+}
+
+// نموذج الدخل
+class IncomeForm extends StatefulWidget {
+  const IncomeForm({super.key});
+
+  @override
+  IncomeFormState createState() => IncomeFormState();
+}
+
+class IncomeFormState extends State<IncomeForm> {
+  final _formKey = GlobalKey<FormState>();
+  final _amountController = TextEditingController();
+  final _noteController = TextEditingController();
+  DateTime _selectedDate = DateTime.now();
+  TransactionSource _selectedSource = TransactionSource.drawer;
+  bool _isLoading = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: EdgeInsets.all(16),
+      child: Form(
+        key: _formKey,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // حقل المبلغ
+            TextFormField(
+              controller: _amountController,
+              keyboardType: TextInputType.numberWithOptions(decimal: true),
+              decoration: InputDecoration(
+                labelText: 'المبلغ',
+                prefixIcon: Icon(Icons.attach_money),
+                border: OutlineInputBorder(),
+              ),
+              validator: (value) {
+                if (value == null || value.isEmpty) {
+                  return 'يرجى إدخال المبلغ';
+                }
+                if (double.tryParse(value) == null) {
+                  return 'يرجى إدخال رقم صحيح';
+                }
+                return null;
+              },
+            ),
+            SizedBox(height: 16),
+
+            // اختيار المصدر
+            DropdownButtonFormField<TransactionSource>(
+              value: _selectedSource,
+              decoration: const InputDecoration(
+                labelText: 'المصدر',
+                prefixIcon: Icon(Icons.account_balance_wallet),
+                border: OutlineInputBorder(),
+              ),
+              items: const [
+                DropdownMenuItem(
+                  value: TransactionSource.drawer,
+                  child: Text('درج'),
+                ),
+                DropdownMenuItem(
+                  value: TransactionSource.bank,
+                  child: Text('بنك'),
+                ),
+              ],
+              onChanged: (value) {
+                setState(() {
+                  _selectedSource = value!;
+                });
+              },
+            ),
+            SizedBox(height: 16),
+
+            // اختيار التاريخ
+            ListTile(
+              leading: Icon(Icons.calendar_today),
+              title: Text('التاريخ'),
+              subtitle: Text(
+                '${_selectedDate.day}/${_selectedDate.month}/${_selectedDate.year}',
+              ),
+              onTap: () => _selectDate(context),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+                side: BorderSide(color: Colors.grey),
+              ),
+            ),
+            SizedBox(height: 16),
+
+            // حقل الملاحظة
+            TextFormField(
+              controller: _noteController,
+              maxLines: 3,
+              decoration: InputDecoration(
+                labelText: 'ملاحظة (اختياري)',
+                prefixIcon: Icon(Icons.note),
+                border: OutlineInputBorder(),
+              ),
+            ),
+            SizedBox(height: 24),
+
+            // زر الحفظ
+            ElevatedButton(
+              onPressed: _isLoading ? null : _saveIncome,
+              child: _isLoading
+                  ? CircularProgressIndicator(color: Colors.white)
+                  : Text('حفظ الدخل'),
+              style: ElevatedButton.styleFrom(
+                padding: EdgeInsets.symmetric(vertical: 16),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// اختيار التاريخ
+  Future<void> _selectDate(BuildContext context) async {
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: _selectedDate,
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now(),
+    );
+    if (picked != null && picked != _selectedDate) {
+      setState(() {
+        _selectedDate = picked;
+      });
+    }
+  }
+
+  /// حفظ الدخل
+  Future<void> _saveIncome() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final income = Income(
+        date: _selectedDate,
+        amount: double.parse(_amountController.text),
+        source: _selectedSource,
+        note: _noteController.text.isEmpty ? null : _noteController.text,
+        createdAt: DateTime.now(),
+      );
+
+      await DatabaseHelper.instance.createIncome(income);
+
+      // تحديث البيانات في المزود
+      if (mounted) {
+        Provider.of<FinanceProvider>(context, listen: false).refreshTodayData();
+        Navigator.pop(context);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('تم حفظ الدخل بنجاح')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('خطأ في حفظ الدخل: $e')));
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _amountController.dispose();
+    _noteController.dispose();
+    super.dispose();
+  }
+}
+
+// نموذج الديون
+
+// داخل ملف add_transaction_modal.dart، استبدل الكلاسات القديمة بهذا
+class DrawerForm extends StatefulWidget {
+  const DrawerForm({super.key});
+
+  @override
+  DrawerFormState createState() => DrawerFormState();
+}
+
+class DrawerFormState extends State<DrawerForm> {
+  final _formKey = GlobalKey<FormState>();
+  final _amountController = TextEditingController();
+  final _noteController = TextEditingController();
+
+  DateTime _selectedDate = DateTime.now();
+  // متغير لتخزين نوع اللقطة المختارة ('start' or 'end')
+  SnapshotType _selectedType = SnapshotType.start;
+
+  @override
+  void dispose() {
+    _amountController.dispose();
+    _noteController.dispose();
+    super.dispose();
+  }
+
+  // حفظ لقطة الدرج
+  Future<void> _saveSnapshot() async {
+    if (!(_formKey.currentState?.validate() ?? false)) {
+      return;
+    }
+
+    final amount = double.parse(_amountController.text);
+    final note = _noteController.text;
+
+    final snapshot = DrawerSnapshot(
+      date: _selectedDate,
+      type: _selectedType,
+      cashAmount: amount,
+      note: note.isNotEmpty ? note : null,
+      createdAt: DateTime.now(),
+    );
+
+    await DatabaseHelper.instance.saveDrawerSnapshot(snapshot);
+
+    if (mounted) {
+      // لا تحتاج لاستدعاء الـ Provider هنا لأننا سنقوم بذلك في main_layout
+
+      // --- التعديل هنا ---
+      Navigator.of(context).pop(true); // أرجع 'true' للإشارة إلى النجاح
+      // --- نهاية التعديل ---
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'تم حفظ رصيد ${_selectedType == SnapshotType.start ? 'البداية' : 'النهاية'} بنجاح',
+          ),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Form(
+      key: _formKey,
+      child: ListView(
+        padding: const EdgeInsets.all(16.0),
+        children: [
+          const Text(
+            "تسجيل رصيد الدرج",
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 24),
+
+          // 1. محدد التاريخ
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text(
+              'التاريخ',
+              style: TextStyle(fontWeight: FontWeight.w500),
+            ),
+            subtitle: Text(DateFormat.yMMMMEEEEd('ar').format(_selectedDate)),
+            trailing: const Icon(Icons.calendar_today_outlined),
+            onTap: () async {
+              final pickedDate = await showDatePicker(
+                context: context,
+                initialDate: _selectedDate,
+                firstDate: DateTime(2020),
+                lastDate: DateTime.now().add(const Duration(days: 1)),
+              );
+              if (pickedDate != null) {
+                setState(() {
+                  _selectedDate = pickedDate;
+                });
+              }
+            },
+          ),
+          const SizedBox(height: 16),
+
+          // 2. حقل المبلغ
+          TextFormField(
+            controller: _amountController,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(
+              labelText: 'المبلغ',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.all(Radius.circular(12)),
+              ),
+              suffixText: 'د.ج',
+              prefixIcon: Icon(Icons.money),
+            ),
+            validator: (value) {
+              if (value == null ||
+                  value.isEmpty ||
+                  double.tryParse(value) == null) {
+                return 'الرجاء إدخال مبلغ صحيح';
+              }
+              return null;
+            },
+          ),
+          const SizedBox(height: 16),
+
+          // 3. القائمة المنسدلة (بداية / نهاية)
+          DropdownButtonFormField<SnapshotType>(
+            value: _selectedType,
+            decoration: const InputDecoration(
+              labelText: 'نوع الرصيد',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.all(Radius.circular(12)),
+              ),
+              prefixIcon: Icon(Icons.sync_alt),
+            ),
+            items: const [
+              DropdownMenuItem(
+                value: SnapshotType.start,
+                child: Text('رصيد بداية اليوم'),
+              ),
+              DropdownMenuItem(
+                value: SnapshotType.end,
+                child: Text('رصيد نهاية اليوم'),
+              ),
+            ],
+            onChanged: (value) {
+              if (value != null) {
+                setState(() {
+                  _selectedType = value;
+                });
+              }
+            },
+          ),
+          const SizedBox(height: 16),
+
+          // 4. حقل الملاحظات
+          TextFormField(
+            controller: _noteController,
+            decoration: const InputDecoration(
+              labelText: 'ملاحظة (اختياري)',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.all(Radius.circular(12)),
+              ),
+              prefixIcon: Icon(Icons.note_alt_outlined),
+            ),
+          ),
+          const SizedBox(height: 32),
+
+          // 5. زر الحفظ
+          FilledButton.icon(
+            icon: const Icon(Icons.save),
+            label: const Text('حفظ', style: TextStyle(fontSize: 16)),
+            onPressed: _saveSnapshot,
+            style: FilledButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+import 'package:flutter/material.dart';
+import '../../data/local/database_helper.dart';
+import '../../data/models/debt_entry.dart';
+import '../../data/models/party.dart';
+import 'package:provider/provider.dart';
+import '../../logic/providers/finance_provider.dart';
+
+/// نموذج إضافة معاملة دين مخصص لطرف معين
+class DebtTransactionModal extends StatefulWidget {
+  final Party party;
+  final String transactionKind; // 'purchase_credit', 'payment', 'loan_out', 'settlement'
+  final VoidCallback? onTransactionSaved;
+  
+  const DebtTransactionModal({
+    super.key,
+    required this.party,
+    required this.transactionKind,
+    this.onTransactionSaved,
+  });
+
+  @override
+  State<DebtTransactionModal> createState() => _DebtTransactionModalState();
+}
+
+class _DebtTransactionModalState extends State<DebtTransactionModal> {
+  final _formKey = GlobalKey<FormState>();
+  final _amountController = TextEditingController();
+  final _noteController = TextEditingController();
+  bool _isLoading = false;
+
+  @override
+  void dispose() {
+    _amountController.dispose();
+    _noteController.dispose();
+    super.dispose();
+  }
+
+  /// الحصول على عنوان النموذج بناءً على نوع المعاملة
+  String get _getTitle {
+    switch (widget.transactionKind) {
+      case 'purchase_credit':
+        return 'شراء بالدين من ${widget.party.name}';
+      case 'payment':
+        return 'تسديد دفعة لـ ${widget.party.name}';
+      case 'loan_out':
+        return 'إقراض مبلغ لـ ${widget.party.name}';
+      case 'settlement':
+        return 'استلام دفعة من ${widget.party.name}';
+      default:
+        return 'معاملة مع ${widget.party.name}';
+    }
+  }
+
+  /// الحصول على أيقونة النموذج بناءً على نوع المعاملة
+  IconData get _getIcon {
+    switch (widget.transactionKind) {
+      case 'purchase_credit':
+        return Icons.shopping_cart;
+      case 'payment':
+        return Icons.payment;
+      case 'loan_out':
+        return Icons.arrow_upward;
+      case 'settlement':
+        return Icons.arrow_downward;
+      default:
+        return Icons.account_balance_wallet;
+    }
+  }
+
+  /// الحصول على لون النموذج بناءً على نوع المعاملة
+  Color get _getColor {
+    switch (widget.transactionKind) {
+      case 'purchase_credit':
+      case 'loan_out':
+        return Colors.red.shade600; // زيادة الدين
+      case 'payment':
+      case 'settlement':
+        return Colors.green.shade600; // تقليل الدين
+      default:
+        return Colors.blue.shade600;
+    }
+  }
+
+  /// الحصول على نص الزر بناءً على نوع المعاملة
+  String get _getButtonText {
+    switch (widget.transactionKind) {
+      case 'purchase_credit':
+        return 'تسجيل الشراء';
+      case 'payment':
+        return 'تسجيل التسديد';
+      case 'loan_out':
+        return 'تسجيل الإقراض';
+      case 'settlement':
+        return 'تسجيل الاستلام';
+      default:
+        return 'حفظ المعاملة';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Container(
+        height: MediaQuery.of(context).size.height * 0.6,
+        padding: const EdgeInsets.all(20),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // مقبض السحب
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 5,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[300],
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              
+              // العنوان مع الأيقونة
+              Row(
+                children: [
+                  Icon(_getIcon, color: _getColor, size: 28),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      _getTitle,
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: _getColor,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 24),
+              
+              // حقل المبلغ
+              TextFormField(
+                controller: _amountController,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(
+                  labelText: 'المبلغ',
+                  border: const OutlineInputBorder(
+                    borderRadius: BorderRadius.all(Radius.circular(12)),
+                  ),
+                  suffixText: 'د.ج',
+                  prefixIcon: Icon(Icons.money, color: _getColor),
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'الرجاء إدخال المبلغ';
+                  }
+                  if (double.tryParse(value) == null || double.parse(value) <= 0) {
+                    return 'الرجاء إدخال مبلغ صحيح';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+              
+              // حقل الملاحظات
+              TextFormField(
+                controller: _noteController,
+                decoration: const InputDecoration(
+                  labelText: 'ملاحظات (اختياري)',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.all(Radius.circular(12)),
+                  ),
+                  prefixIcon: Icon(Icons.note_alt_outlined),
+                ),
+                maxLines: 3,
+              ),
+              const Spacer(),
+              
+              // زر الحفظ
+              FilledButton.icon(
+                icon: _isLoading 
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : Icon(_getIcon),
+                label: Text(
+                  _isLoading ? 'جاري الحفظ...' : _getButtonText,
+                  style: const TextStyle(fontSize: 16),
+                ),
+                onPressed: _isLoading ? null : _saveTransaction,
+                style: FilledButton.styleFrom(
+                  backgroundColor: _getColor,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// حفظ المعاملة في قاعدة البيانات
+  void _saveTransaction() async {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final debtEntry = DebtEntry(
+        date: DateTime.now(),
+        partyId: widget.party.id!,
+        kind: widget.transactionKind,
+        amount: double.parse(_amountController.text),
+        note: _noteController.text.isNotEmpty ? _noteController.text : null,
+        createdAt: DateTime.now(),
+      );
+      
+      await DatabaseHelper.instance.createDebtEntry(debtEntry);
+
+      if (mounted) {
+        // تحديث البيانات في المزود
+        context.read<FinanceProvider>().fetchFinancialDataForSelectedDate();
+        
+        // تحديث البيانات في الشاشة الحالية
+        widget.onTransactionSaved?.call();
+        
+        Navigator.of(context).pop(true);
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('تم حفظ ${_getSuccessMessage()} بنجاح'),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('حدث خطأ أثناء الحفظ: $e'),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  /// الحصول على رسالة النجاح بناءً على نوع المعاملة
+  String _getSuccessMessage() {
+    switch (widget.transactionKind) {
+      case 'purchase_credit':
+        return 'معاملة الشراء';
+      case 'payment':
+        return 'معاملة التسديد';
+      case 'loan_out':
+        return 'معاملة الإقراض';
+      case 'settlement':
+        return 'معاملة الاستلام';
+      default:
+        return 'المعاملة';
+    }
+  }
+}
+
+/// دالة مساعدة لفتح نموذج معاملة الدين
+Future<bool?> showDebtTransactionModal({
+  required BuildContext context,
+  required Party party,
+  required String transactionKind,
+  VoidCallback? onTransactionSaved,
+}) {
+  return showModalBottomSheet<bool>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (context) => DebtTransactionModal(
+      party: party,
+      transactionKind: transactionKind,
+      onTransactionSaved: onTransactionSaved,
+    ),
+  );
+}import 'package:flutter/material.dart';
+import '../theme/action_button_styles.dart';
+
+/// شريط الإجراءات السفلي للديون - قابل لإعادة الاستخدام
+class DebtActionBar extends StatelessWidget {
+  /// دالة الضغط على الزر الأول (إقراض للأشخاص أو شراء للموردين)
+  final VoidCallback onFirstActionPressed;
+  
+  /// دالة الضغط على الزر الثاني (استلام للأشخاص أو تسديد للموردين)
+  final VoidCallback onSecondActionPressed;
+  
+  /// هل الطرف مورد؟ (لتحديد نوع الأزرار)
+  final bool isVendor;
+  
+  const DebtActionBar({
+    super.key,
+    required this.onFirstActionPressed,
+    required this.onSecondActionPressed,
+    required this.isVendor,
+  });
+  
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          color: Theme.of(context).scaffoldBackgroundColor,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 8,
+              offset: const Offset(0, -2),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            // الزر الأول (أحمر)
+            Expanded(
+              child: FilledButton.icon(
+                onPressed: onFirstActionPressed,
+                style: ActionButtonStyles.redActionStyle,
+                icon: Icon(
+                  isVendor ? Icons.shopping_cart : Icons.arrow_upward,
+                  size: 20,
+                ),
+                label: Text(isVendor ? 'شراء' : 'إقراض'),
+              ),
+            ),
+            
+            // مسافة بين الأزرار
+            const SizedBox(width: 12),
+            
+            // الزر الثاني (أخضر)
+            Expanded(
+              child: FilledButton.icon(
+                onPressed: onSecondActionPressed,
+                style: ActionButtonStyles.greenActionStyle,
+                icon: Icon(
+                  isVendor ? Icons.payment : Icons.arrow_downward,
+                  size: 20,
+                ),
+                label: Text(isVendor ? 'تسديد' : 'استلام'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}// lib/presentation/widgets/party_balance_card.dart
+
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import 'package:youssef_fabric_ledger/data/local/database_helper.dart';
+import 'package:youssef_fabric_ledger/data/models/party.dart';
+// تأكد من أن هذا الاستيراد صحيح ويشير إلى مكان ملف شاشة التفاصيل
+import 'package:youssef_fabric_ledger/presentation/screens/party_details_screen.dart';
+
+class PartyBalanceCard extends StatelessWidget {
+  final Party party;
+  const PartyBalanceCard({required this.party, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    // تهيئة صيغة العملة مع استخدام الأرقام اللاتينية
+    final currencyFormat = NumberFormat.currency(locale: 'en', symbol: 'د.ج');
+
+    // نستخدم FutureBuilder لجلب الرصيد بشكل غير متزامن لكل بطاقة على حدة
+    return FutureBuilder<double>(
+      future: DatabaseHelper.instance.getPartyBalance(party.id!),
+      builder: (context, snapshot) {
+        // أثناء انتظار البيانات، يمكن عرض عنصر نائب بسيط
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const ListTile(
+            title: Text("... جاري حساب الرصيد"),
+            subtitle: LinearProgressIndicator(),
+          );
+        }
+
+        // في حال حدوث خطأ أثناء جلب البيانات
+        if (snapshot.hasError) {
+          return ListTile(
+            title: Text(party.name),
+            subtitle: const Text(
+              "خطأ في حساب الرصيد",
+              style: TextStyle(color: Colors.red),
+            ),
+          );
+        }
+
+        // إذا لم يكن هناك بيانات (وهو أمر غير مرجح إلا في حالة الخطأ)
+        if (!snapshot.hasData) {
+          return const SizedBox.shrink();
+        }
+
+        final balance = snapshot.data!;
+        // إذا كان الرصيد صفراً، لا نعرض البطاقة لتنظيف الواجهة
+        if (balance == 0) {
+          return const SizedBox.shrink();
+        }
+
+        // تحديد النصوص والألوان بناءً على نوع الطرف (مورد أم شخص)
+        final bool isVendor = party.type == 'vendor';
+        final String label = isVendor ? "مستحق له:" : "مستحق منه:";
+        final Color balanceColor = isVendor
+            ? Colors.red.shade700
+            : Colors.green.shade700;
+
+        return Card(
+          margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          elevation: 1,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          child: ListTile(
+            leading: CircleAvatar(
+              backgroundColor: Theme.of(context).primaryColor.withOpacity(0.1),
+              foregroundColor: Theme.of(context).primaryColor,
+              child: Text(party.name.substring(0, 1)),
+            ),
+            title: Text(
+              party.name,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            subtitle: Text(label),
+            trailing: Text(
+              currencyFormat.format(
+                balance.abs(),
+              ), // .abs() لعرض القيمة المطلقة دائماً
+              style: TextStyle(
+                color: balanceColor,
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+              ),
+            ),
+            // الجزء الأهم: عند الضغط على البطاقة
+            onTap: () {
+              // تنفيذ أمر الانتقال إلى شاشة التفاصيل
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (context) => PartyDetailsScreen(
+                    party: party, // نمرر بيانات الطرف
+                    initialBalance: balance, // نمرر الرصيد المحسوب
+                  ),
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+}
+// lib/presentation/widgets/drawer_history_log.dart
+
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import 'package:collection/collection.dart';
+import 'package:provider/provider.dart';
+import 'package:youssef_fabric_ledger/core/enums.dart';
+import 'package:youssef_fabric_ledger/data/local/database_helper.dart';
+import 'package:youssef_fabric_ledger/data/models/drawer_snapshot.dart';
+import 'package:youssef_fabric_ledger/logic/providers/finance_provider.dart';
+
+class DrawerHistoryLog extends StatefulWidget {
+  const DrawerHistoryLog({super.key});
+
+  @override
+  DrawerHistoryLogState createState() => DrawerHistoryLogState();
+}
+
+class DrawerHistoryLogState extends State<DrawerHistoryLog> {
+  List<DrawerSnapshot> _snapshots = [];
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSnapshots();
+  }
+
+  Future<void> _loadSnapshots() async {
+    setState(() {
+      _isLoading = true;
+    });
+    final snapshots = await DatabaseHelper.instance.getAllDrawerSnapshots();
+    setState(() {
+      _snapshots = snapshots;
+      _isLoading = false;
+    });
+  }
+
+  // --- ✅ التعديل هنا: الدالة الآن تستقبل ID ---
+  Future<void> _deleteSnapshot(int id, SnapshotType type) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('تأكيد الحذف'),
+        content: Text(
+          'هل أنت متأكد من حذف رصيد ${type == SnapshotType.start ? 'البداية' : 'النهاية'} لهذا اليوم؟',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('إلغاء'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('حذف'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true && mounted) {
+      // --- ✅ وهنا: نستدعي الدالة الصحيحة ---
+      await DatabaseHelper.instance.deleteDrawerSnapshot(id);
+      Provider.of<FinanceProvider>(context, listen: false).refreshTodayData();
+      _loadSnapshots();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_snapshots.isEmpty) {
+      return const Center(child: Text('لم يتم تسجيل أي لقطات للدرج بعد.'));
+    }
+
+    final groupedSnapshots = groupBy(
+      _snapshots,
+      (DrawerSnapshot s) => DateFormat('yyyy-MM-dd').format(s.date),
+    );
+
+    return ListView.builder(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      itemCount: groupedSnapshots.keys.length,
+      itemBuilder: (context, index) {
+        final dateKey = groupedSnapshots.keys.elementAt(index);
+        final snapshotsForDay = groupedSnapshots[dateKey]!;
+        final date = DateTime.parse(dateKey);
+        return _buildDaySection(context, date, snapshotsForDay);
+      },
+    );
+  }
+
+  Widget _buildDaySection(
+    BuildContext context,
+    DateTime date,
+    List<DrawerSnapshot> snapshots,
+  ) {
+    final currencyFormat = NumberFormat.currency(locale: 'ar', symbol: 'د.ج');
+    final startSnapshot = snapshots.firstWhereOrNull(
+      (s) => s.type == SnapshotType.start,
+    );
+    final endSnapshot = snapshots.firstWhereOrNull(
+      (s) => s.type == SnapshotType.end,
+    );
+
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 8),
+      elevation: 1,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(12.0),
+            child: Text(
+              DateFormat.yMMMMEEEEd('ar').format(date),
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            ),
+          ),
+          const Divider(height: 1),
+          if (startSnapshot != null)
+            ListTile(
+              leading: const CircleAvatar(
+                backgroundColor: Colors.blueAccent,
+                child: Icon(Icons.play_arrow, color: Colors.white),
+              ),
+              title: const Text('رصيد بداية اليوم'),
+              subtitle: Text(currencyFormat.format(startSnapshot.cashAmount)),
+              trailing: IconButton(
+                icon: Icon(Icons.delete_outline, color: Colors.red.shade400),
+                // --- ✅ التعديل هنا: نمرر ID بدلاً من التاريخ ---
+                onPressed: () =>
+                    _deleteSnapshot(startSnapshot.id!, SnapshotType.start),
+              ),
+            ),
+          if (endSnapshot != null)
+            ListTile(
+              leading: const CircleAvatar(
+                backgroundColor: Colors.green,
+                child: Icon(Icons.stop, color: Colors.white),
+              ),
+              title: const Text('رصيد نهاية اليوم'),
+              subtitle: Text(currencyFormat.format(endSnapshot.cashAmount)),
+              trailing: IconButton(
+                icon: Icon(Icons.delete_outline, color: Colors.red.shade400),
+                // --- ✅ وهنا أيضًا ---
+                onPressed: () =>
+                    _deleteSnapshot(endSnapshot.id!, SnapshotType.end),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}

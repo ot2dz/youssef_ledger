@@ -1,0 +1,308 @@
+import 'package:flutter/material.dart';
+import '../../data/local/database_helper.dart';
+import '../../data/models/debt_entry.dart';
+import '../../data/models/party.dart';
+import 'package:provider/provider.dart';
+import '../../logic/providers/finance_provider.dart';
+
+/// نموذج إضافة معاملة دين مخصص لطرف معين
+class DebtTransactionModal extends StatefulWidget {
+  final Party party;
+  final String transactionKind; // 'purchase_credit', 'payment', 'loan_out', 'settlement'
+  final VoidCallback? onTransactionSaved;
+  
+  const DebtTransactionModal({
+    super.key,
+    required this.party,
+    required this.transactionKind,
+    this.onTransactionSaved,
+  });
+
+  @override
+  State<DebtTransactionModal> createState() => _DebtTransactionModalState();
+}
+
+class _DebtTransactionModalState extends State<DebtTransactionModal> {
+  final _formKey = GlobalKey<FormState>();
+  final _amountController = TextEditingController();
+  final _noteController = TextEditingController();
+  bool _isLoading = false;
+
+  @override
+  void dispose() {
+    _amountController.dispose();
+    _noteController.dispose();
+    super.dispose();
+  }
+
+  /// الحصول على عنوان النموذج بناءً على نوع المعاملة
+  String get _getTitle {
+    switch (widget.transactionKind) {
+      case 'purchase_credit':
+        return 'شراء بالدين من ${widget.party.name}';
+      case 'payment':
+        return 'تسديد دفعة لـ ${widget.party.name}';
+      case 'loan_out':
+        return 'إقراض مبلغ لـ ${widget.party.name}';
+      case 'settlement':
+        return 'استلام دفعة من ${widget.party.name}';
+      default:
+        return 'معاملة مع ${widget.party.name}';
+    }
+  }
+
+  /// الحصول على أيقونة النموذج بناءً على نوع المعاملة
+  IconData get _getIcon {
+    switch (widget.transactionKind) {
+      case 'purchase_credit':
+        return Icons.shopping_cart;
+      case 'payment':
+        return Icons.payment;
+      case 'loan_out':
+        return Icons.arrow_upward;
+      case 'settlement':
+        return Icons.arrow_downward;
+      default:
+        return Icons.account_balance_wallet;
+    }
+  }
+
+  /// الحصول على لون النموذج بناءً على نوع المعاملة
+  Color get _getColor {
+    switch (widget.transactionKind) {
+      case 'purchase_credit':
+      case 'loan_out':
+        return Colors.red.shade600; // زيادة الدين
+      case 'payment':
+      case 'settlement':
+        return Colors.green.shade600; // تقليل الدين
+      default:
+        return Colors.blue.shade600;
+    }
+  }
+
+  /// الحصول على نص الزر بناءً على نوع المعاملة
+  String get _getButtonText {
+    switch (widget.transactionKind) {
+      case 'purchase_credit':
+        return 'تسجيل الشراء';
+      case 'payment':
+        return 'تسجيل التسديد';
+      case 'loan_out':
+        return 'تسجيل الإقراض';
+      case 'settlement':
+        return 'تسجيل الاستلام';
+      default:
+        return 'حفظ المعاملة';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Container(
+        height: MediaQuery.of(context).size.height * 0.6,
+        padding: const EdgeInsets.all(20),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // مقبض السحب
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 5,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[300],
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              
+              // العنوان مع الأيقونة
+              Row(
+                children: [
+                  Icon(_getIcon, color: _getColor, size: 28),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      _getTitle,
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: _getColor,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 24),
+              
+              // حقل المبلغ
+              TextFormField(
+                controller: _amountController,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(
+                  labelText: 'المبلغ',
+                  border: const OutlineInputBorder(
+                    borderRadius: BorderRadius.all(Radius.circular(12)),
+                  ),
+                  suffixText: 'د.ج',
+                  prefixIcon: Icon(Icons.money, color: _getColor),
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'الرجاء إدخال المبلغ';
+                  }
+                  if (double.tryParse(value) == null || double.parse(value) <= 0) {
+                    return 'الرجاء إدخال مبلغ صحيح';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+              
+              // حقل الملاحظات
+              TextFormField(
+                controller: _noteController,
+                decoration: const InputDecoration(
+                  labelText: 'ملاحظات (اختياري)',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.all(Radius.circular(12)),
+                  ),
+                  prefixIcon: Icon(Icons.note_alt_outlined),
+                ),
+                maxLines: 3,
+              ),
+              const Spacer(),
+              
+              // زر الحفظ
+              FilledButton.icon(
+                icon: _isLoading 
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : Icon(_getIcon),
+                label: Text(
+                  _isLoading ? 'جاري الحفظ...' : _getButtonText,
+                  style: const TextStyle(fontSize: 16),
+                ),
+                onPressed: _isLoading ? null : _saveTransaction,
+                style: FilledButton.styleFrom(
+                  backgroundColor: _getColor,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// حفظ المعاملة في قاعدة البيانات
+  void _saveTransaction() async {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final debtEntry = DebtEntry(
+        date: DateTime.now(),
+        partyId: widget.party.id!,
+        kind: widget.transactionKind,
+        amount: double.parse(_amountController.text),
+        note: _noteController.text.isNotEmpty ? _noteController.text : null,
+        createdAt: DateTime.now(),
+      );
+      
+      await DatabaseHelper.instance.createDebtEntry(debtEntry);
+
+      if (mounted) {
+        // تحديث البيانات في المزود
+        context.read<FinanceProvider>().fetchFinancialDataForSelectedDate();
+        
+        // تحديث البيانات في الشاشة الحالية
+        widget.onTransactionSaved?.call();
+        
+        Navigator.of(context).pop(true);
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('تم حفظ ${_getSuccessMessage()} بنجاح'),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('حدث خطأ أثناء الحفظ: $e'),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  /// الحصول على رسالة النجاح بناءً على نوع المعاملة
+  String _getSuccessMessage() {
+    switch (widget.transactionKind) {
+      case 'purchase_credit':
+        return 'معاملة الشراء';
+      case 'payment':
+        return 'معاملة التسديد';
+      case 'loan_out':
+        return 'معاملة الإقراض';
+      case 'settlement':
+        return 'معاملة الاستلام';
+      default:
+        return 'المعاملة';
+    }
+  }
+}
+
+/// دالة مساعدة لفتح نموذج معاملة الدين
+Future<bool?> showDebtTransactionModal({
+  required BuildContext context,
+  required Party party,
+  required String transactionKind,
+  VoidCallback? onTransactionSaved,
+}) {
+  return showModalBottomSheet<bool>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (context) => DebtTransactionModal(
+      party: party,
+      transactionKind: transactionKind,
+      onTransactionSaved: onTransactionSaved,
+    ),
+  );
+}
