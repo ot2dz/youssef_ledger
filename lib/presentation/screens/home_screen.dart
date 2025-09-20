@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import 'package:youssef_fabric_ledger/logic/providers/date_provider.dart';
 import 'package:youssef_fabric_ledger/logic/providers/finance_provider.dart';
 import 'package:youssef_fabric_ledger/presentation/screens/settings_screen.dart';
+import 'package:youssef_fabric_ledger/presentation/screens/cash_balance_log_screen.dart';
 import 'package:youssef_fabric_ledger/core/formatters/date_formatters.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -285,9 +286,19 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ],
             ),
-            IconButton(
-              icon: const Icon(Icons.edit, color: Colors.grey),
-              onPressed: () => _showEditBalanceDialog(context),
+            Row(
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.history, color: Colors.grey),
+                  onPressed: () => _navigateToCashBalanceLog(context),
+                  tooltip: 'سجل التغييرات',
+                ),
+                IconButton(
+                  icon: const Icon(Icons.edit, color: Colors.grey),
+                  onPressed: () => _showEditBalanceDialog(context),
+                  tooltip: 'تعديل الرصيد',
+                ),
+              ],
             ),
           ],
         ),
@@ -500,6 +511,12 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  void _navigateToCashBalanceLog(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (context) => const CashBalanceLogScreen()),
+    );
+  }
+
   void _showEditBalanceDialog(BuildContext context) {
     final financeProvider = Provider.of<FinanceProvider>(
       context,
@@ -532,7 +549,11 @@ class _HomeScreenState extends State<HomeScreen> {
               onPressed: () {
                 final double? newBalance = double.tryParse(controller.text);
                 if (newBalance != null) {
-                  financeProvider.updateTotalCashBalance(newBalance);
+                  financeProvider.updateTotalCashBalanceWithLog(
+                    newBalance: newBalance,
+                    reason: 'تعديل يدوي للرصيد النقدي',
+                    details: 'تم التعديل من الشاشة الرئيسية',
+                  );
                   Navigator.of(context).pop();
                 }
               },

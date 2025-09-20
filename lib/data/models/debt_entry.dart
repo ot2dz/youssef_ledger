@@ -1,10 +1,13 @@
 // lib/data/models/debt_entry.dart
+import 'package:youssef_fabric_ledger/core/enums.dart';
+
 class DebtEntry {
   final int? id;
   final DateTime date;
   final int partyId;
   final String kind; // 'purchase_credit', 'payment', 'loan_out', 'settlement'
   final double amount;
+  final PaymentMethod paymentMethod; // طريقة الدفع
   final String? note;
   final DateTime createdAt;
 
@@ -14,6 +17,7 @@ class DebtEntry {
     required this.partyId,
     required this.kind,
     required this.amount,
+    this.paymentMethod = PaymentMethod.credit, // افتراضياً آجل
     this.note,
     required this.createdAt,
   });
@@ -25,6 +29,7 @@ class DebtEntry {
       'partyId': partyId,
       'kind': kind,
       'amount': amount,
+      'paymentMethod': paymentMethod.name,
       'note': note,
       'createdAt': createdAt.toIso8601String(),
     };
@@ -37,6 +42,9 @@ class DebtEntry {
       partyId: map['partyId'] as int,
       kind: map['kind'] as String,
       amount: (map['amount'] as num).toDouble(),
+      paymentMethod: PaymentMethod.values.byName(
+        map['paymentMethod'] as String? ?? 'credit',
+      ),
       note: map['note'] as String?,
       createdAt: DateTime.parse(map['createdAt'] as String),
     );
@@ -48,6 +56,7 @@ class DebtEntry {
     int? partyId,
     String? kind,
     double? amount,
+    PaymentMethod? paymentMethod,
     String? note,
     DateTime? createdAt,
   }) {
@@ -57,6 +66,7 @@ class DebtEntry {
       partyId: partyId ?? this.partyId,
       kind: kind ?? this.kind,
       amount: amount ?? this.amount,
+      paymentMethod: paymentMethod ?? this.paymentMethod,
       note: note ?? this.note,
       createdAt: createdAt ?? this.createdAt,
     );

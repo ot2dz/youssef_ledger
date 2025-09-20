@@ -3,7 +3,9 @@ import 'package:youssef_fabric_ledger/core/enums.dart';
 import 'package:youssef_fabric_ledger/data/local/database_helper.dart';
 import 'package:youssef_fabric_ledger/data/models/drawer_snapshot.dart';
 import 'package:youssef_fabric_ledger/data/models/expense.dart';
+import 'package:youssef_fabric_ledger/data/models/debt_entry.dart';
 import 'package:youssef_fabric_ledger/logic/providers/date_provider.dart';
+import 'package:youssef_fabric_ledger/models/cash_balance_log.dart';
 
 enum DrawerStatus {
   complete,
@@ -250,6 +252,52 @@ class FinanceProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  /// Helper method to log cash balance changes and update the balance
+  Future<void> _logAndUpdateCashBalance({
+    required double oldBalance,
+    required double newBalance,
+    required CashBalanceChangeType changeType,
+    required String reason,
+    String? details,
+  }) async {
+    final now = DateTime.now();
+    final log = CashBalanceLog(
+      timestamp: now,
+      changeType: changeType,
+      oldBalance: oldBalance,
+      newBalance: newBalance,
+      amount: (newBalance - oldBalance).abs(),
+      reason: reason,
+      details: details,
+      createdAt: now,
+    );
+
+    // Save the log entry
+    await dbHelper.insertCashBalanceLog(log);
+
+    // Update the balance
+    _totalCashBalance = newBalance;
+    await dbHelper.saveSetting('totalCashBalance', newBalance.toString());
+    notifyListeners();
+  }
+
+  /// Public method for manual cash balance updates with logging
+  Future<void> updateTotalCashBalanceWithLog({
+    required double newBalance,
+    required String reason,
+    String? details,
+  }) async {
+    final oldBalance = _totalCashBalance;
+
+    await _logAndUpdateCashBalance(
+      oldBalance: oldBalance,
+      newBalance: newBalance,
+      changeType: CashBalanceChangeType.manualEdit,
+      reason: reason,
+      details: details,
+    );
+  }
+
   Future<void> saveDrawerSnapshot({
     required DateTime date,
     required SnapshotType type,
@@ -284,8 +332,17 @@ class FinanceProvider with ChangeNotifier {
     final dailyIncome = await _calculateDailyIncome(closingDate);
 
     if (dailyIncome > 0) {
-      final newBalance = _totalCashBalance + dailyIncome;
-      await updateTotalCashBalance(newBalance);
+      final oldBalance = _totalCashBalance;
+      final newBalance = oldBalance + dailyIncome;
+
+      await _logAndUpdateCashBalance(
+        oldBalance: oldBalance,
+        newBalance: newBalance,
+        changeType: CashBalanceChangeType.dayClosing,
+        reason: 'إقفال يوم ${closingDate.toIso8601String().substring(0, 10)}',
+        details: 'ربح يومي: $dailyIncome',
+      );
+
       debugPrint(
         '[FINANCE] Day closed for $closingDate: Daily income $dailyIncome added, New balance: $newBalance',
       );
@@ -355,8 +412,17 @@ class FinanceProvider with ChangeNotifier {
 
       // For new cash expenses, deduct from total cash balance
       if (expense.source == TransactionSource.cash) {
-        final newBalance = _totalCashBalance - expense.amount;
-        await updateTotalCashBalance(newBalance);
+        final oldBalance = _totalCashBalance;
+        final newBalance = oldBalance - expense.amount;
+
+        await _logAndUpdateCashBalance(
+          oldBalance: oldBalance,
+          newBalance: newBalance,
+          changeType: CashBalanceChangeType.cashExpense,
+          reason: 'مصروف نقدي: ${expense.note ?? 'بدون ملاحظة'}',
+          details: 'مبلغ: ${expense.amount}',
+        );
+
         debugPrint(
           '[FINANCE] Cash expense added: ${expense.amount}, New balance: $newBalance',
         );
@@ -369,15 +435,34 @@ class FinanceProvider with ChangeNotifier {
         if (oldExpense.source == TransactionSource.cash) {
           // Both old and new are cash: adjust by difference
           final difference = expense.amount - oldExpense.amount;
-          final newBalance = _totalCashBalance - difference;
-          await updateTotalCashBalance(newBalance);
+          final oldBalance = _totalCashBalance;
+          final newBalance = oldBalance - difference;
+
+          await _logAndUpdateCashBalance(
+            oldBalance: oldBalance,
+            newBalance: newBalance,
+            changeType: CashBalanceChangeType.cashExpense,
+            reason: 'تعديل مصروف نقدي: ${expense.note ?? 'بدون ملاحظة'}',
+            details:
+                'فرق المبلغ: $difference (من ${oldExpense.amount} إلى ${expense.amount})',
+          );
+
           debugPrint(
             '[FINANCE] Cash expense updated: difference $difference, New balance: $newBalance',
           );
         } else {
           // Changed from non-cash to cash: deduct full amount
-          final newBalance = _totalCashBalance - expense.amount;
-          await updateTotalCashBalance(newBalance);
+          final oldBalance = _totalCashBalance;
+          final newBalance = oldBalance - expense.amount;
+
+          await _logAndUpdateCashBalance(
+            oldBalance: oldBalance,
+            newBalance: newBalance,
+            changeType: CashBalanceChangeType.cashExpense,
+            reason: 'تحويل إلى مصروف نقدي: ${expense.note ?? 'بدون ملاحظة'}',
+            details: 'تم تحويل من ${oldExpense.source.name} إلى نقدي',
+          );
+
           debugPrint(
             '[FINANCE] Expense changed to cash: ${expense.amount}, New balance: $newBalance',
           );
@@ -385,8 +470,17 @@ class FinanceProvider with ChangeNotifier {
       } else if (oldExpense?.source == TransactionSource.cash &&
           expense.source != TransactionSource.cash) {
         // Changed from cash to non-cash: add back the old amount
-        final newBalance = _totalCashBalance + oldExpense!.amount;
-        await updateTotalCashBalance(newBalance);
+        final oldBalance = _totalCashBalance;
+        final newBalance = oldBalance + oldExpense!.amount;
+
+        await _logAndUpdateCashBalance(
+          oldBalance: oldBalance,
+          newBalance: newBalance,
+          changeType: CashBalanceChangeType.expenseDeletion,
+          reason: 'تحويل من مصروف نقدي: ${expense.note ?? 'بدون ملاحظة'}',
+          details: 'تم تحويل من نقدي إلى ${expense.source.name}',
+        );
+
         debugPrint(
           '[FINANCE] Expense changed from cash: ${oldExpense.amount}, New balance: $newBalance',
         );
@@ -406,8 +500,17 @@ class FinanceProvider with ChangeNotifier {
 
     // If it was a cash expense, add the amount back to total cash balance
     if (expense != null && expense.source == TransactionSource.cash) {
-      final newBalance = _totalCashBalance + expense.amount;
-      await updateTotalCashBalance(newBalance);
+      final oldBalance = _totalCashBalance;
+      final newBalance = oldBalance + expense.amount;
+
+      await _logAndUpdateCashBalance(
+        oldBalance: oldBalance,
+        newBalance: newBalance,
+        changeType: CashBalanceChangeType.expenseDeletion,
+        reason: 'حذف مصروف نقدي: ${expense.note ?? 'بدون ملاحظة'}',
+        details: 'مبلغ محذوف: ${expense.amount}',
+      );
+
       debugPrint(
         '[FINANCE] Cash expense deleted: ${expense.amount}, New balance: $newBalance',
       );
@@ -415,5 +518,96 @@ class FinanceProvider with ChangeNotifier {
 
     // Refresh data
     await fetchFinancialDataForSelectedDate();
+  }
+
+  /// Handle debt transactions with cash balance impact
+  Future<DebtEntry> addDebtTransaction(DebtEntry debtEntry) async {
+    // Save the debt entry to database
+    final savedEntry = await dbHelper.createDebtEntry(debtEntry);
+
+    // Handle cash balance update if payment method is cash
+    if (debtEntry.paymentMethod == PaymentMethod.cash) {
+      await _handleCashDebtTransaction(debtEntry);
+    }
+
+    // Refresh data
+    await fetchFinancialDataForSelectedDate();
+
+    return savedEntry;
+  }
+
+  /// Handle cash balance changes for debt transactions
+  Future<void> _handleCashDebtTransaction(DebtEntry debtEntry) async {
+    final oldBalance = _totalCashBalance;
+    late final double newBalance;
+    late final CashBalanceChangeType changeType;
+    late final String reason;
+    late final String details;
+
+    // Determine if this is a payment (decreases cash) or collection (increases cash)
+    final isPayment =
+        debtEntry.kind == 'payment' || debtEntry.kind == 'purchase_credit';
+
+    if (isPayment) {
+      // Payment: decrease cash balance
+      newBalance = oldBalance - debtEntry.amount;
+      changeType = CashBalanceChangeType.debtPayment;
+      reason = _getPaymentReason(debtEntry);
+      details =
+          'دفع لطرف: ${await _getPartyName(debtEntry.partyId)} - مبلغ: ${debtEntry.amount}';
+    } else {
+      // Collection: increase cash balance
+      newBalance = oldBalance + debtEntry.amount;
+      changeType = CashBalanceChangeType.debtCollection;
+      reason = _getCollectionReason(debtEntry);
+      details =
+          'استلام من طرف: ${await _getPartyName(debtEntry.partyId)} - مبلغ: ${debtEntry.amount}';
+    }
+
+    await _logAndUpdateCashBalance(
+      oldBalance: oldBalance,
+      newBalance: newBalance,
+      changeType: changeType,
+      reason: reason,
+      details: details,
+    );
+
+    debugPrint(
+      '[FINANCE] Debt transaction processed: ${debtEntry.kind}, Amount: ${debtEntry.amount}, New balance: $newBalance',
+    );
+  }
+
+  /// Get payment reason based on debt entry kind
+  String _getPaymentReason(DebtEntry debtEntry) {
+    switch (debtEntry.kind) {
+      case 'payment':
+        return 'تسديد دفعة دين';
+      case 'purchase_credit':
+        return 'شراء بالدين (دفع نقداً)';
+      default:
+        return 'دفع دين';
+    }
+  }
+
+  /// Get collection reason based on debt entry kind
+  String _getCollectionReason(DebtEntry debtEntry) {
+    switch (debtEntry.kind) {
+      case 'settlement':
+        return 'استلام دفعة من مدين';
+      case 'loan_out':
+        return 'استلام قرض مُسدد';
+      default:
+        return 'استلام من مدين';
+    }
+  }
+
+  /// Get party name by ID
+  Future<String> _getPartyName(int partyId) async {
+    try {
+      final party = await dbHelper.getPartyById(partyId);
+      return party?.name ?? 'غير معروف';
+    } catch (e) {
+      return 'غير معروف';
+    }
   }
 }

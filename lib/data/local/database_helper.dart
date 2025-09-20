@@ -10,6 +10,7 @@ import 'package:youssef_fabric_ledger/data/models/drawer_snapshot.dart';
 import 'package:youssef_fabric_ledger/data/models/expense.dart';
 import 'package:youssef_fabric_ledger/data/models/income.dart';
 import 'package:youssef_fabric_ledger/data/models/party.dart';
+import 'package:youssef_fabric_ledger/models/cash_balance_log.dart';
 
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
@@ -104,7 +105,7 @@ class DatabaseHelper {
     final path = join(dbPath, filePath);
     return await openDatabase(
       path,
-      version: 5, // <-- Incremented for role-driven architecture migration
+      version: 7, // <-- Incremented for debt payment method feature
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
     );
@@ -165,6 +166,7 @@ class DatabaseHelper {
         partyId INTEGER NOT NULL,
         kind TEXT NOT NULL,
         amount REAL NOT NULL,
+        paymentMethod TEXT NOT NULL DEFAULT 'credit' CHECK(paymentMethod IN ('cash', 'credit', 'bank')),
         note TEXT,
         createdAt TEXT NOT NULL,
         FOREIGN KEY (partyId) REFERENCES parties (id) ON DELETE CASCADE
@@ -180,6 +182,20 @@ class DatabaseHelper {
         note TEXT,
         createdAt TEXT NOT NULL,
         UNIQUE(date, type)
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE cash_balance_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT NOT NULL,
+        changeType TEXT NOT NULL CHECK(changeType IN ('manual_edit', 'cash_expense', 'day_closing', 'expense_deletion', 'debt_payment', 'debt_collection')),
+        oldBalance REAL NOT NULL,
+        newBalance REAL NOT NULL,
+        amount REAL NOT NULL,
+        reason TEXT NOT NULL,
+        details TEXT,
+        createdAt TEXT NOT NULL
       )
     ''');
 
@@ -284,6 +300,54 @@ class DatabaseHelper {
 
       debugPrint('[DB-MIGRATION] Version 5 migration completed successfully');
     }
+
+    if (oldVersion < 6) {
+      // Cash balance change log feature
+      debugPrint(
+        '[DB-MIGRATION] Upgrading to version 6: Cash balance change log',
+      );
+
+      // Create cash_balance_log table for audit trail
+      await db.execute('''
+        CREATE TABLE cash_balance_log (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          timestamp TEXT NOT NULL,
+          changeType TEXT NOT NULL CHECK(changeType IN ('manual_edit', 'cash_expense', 'day_closing', 'expense_deletion', 'debt_payment', 'debt_collection')),
+          oldBalance REAL NOT NULL,
+          newBalance REAL NOT NULL,
+          amount REAL NOT NULL,
+          reason TEXT NOT NULL,
+          details TEXT,
+          createdAt TEXT NOT NULL
+        )
+      ''');
+
+      // Add performance index for timestamp-based queries
+      await db.execute('''
+        CREATE INDEX IF NOT EXISTS idx_cash_balance_log_timestamp ON cash_balance_log(timestamp)
+      ''');
+
+      // Add index for change type filtering
+      await db.execute('''
+        CREATE INDEX IF NOT EXISTS idx_cash_balance_log_type ON cash_balance_log(changeType)
+      ''');
+
+      debugPrint('[DB-MIGRATION] Version 6 migration completed successfully');
+    }
+
+    if (oldVersion < 7) {
+      // Add payment method to debt entries
+      debugPrint('[DB-MIGRATION] Upgrading to version 7: Debt payment methods');
+
+      // Add paymentMethod column to debt_entries table
+      await db.execute('''
+        ALTER TABLE debt_entries 
+        ADD COLUMN paymentMethod TEXT NOT NULL DEFAULT 'credit' 
+        CHECK(paymentMethod IN ('cash', 'credit', 'bank'))
+      ''');
+
+      debugPrint('[DB-MIGRATION] Version 7 migration completed successfully');
+    }
   }
 
   /// Force creation of SQL views (useful if migration was skipped)
@@ -355,6 +419,16 @@ class DatabaseHelper {
     }
 
     return parties;
+  }
+
+  Future<Party?> getPartyById(int id) async {
+    final db = await instance.database;
+    final maps = await db.query('parties', where: 'id = ?', whereArgs: [id]);
+
+    if (maps.isNotEmpty) {
+      return Party.fromMap(maps.first);
+    }
+    return null;
   }
 
   // --- Role-Specific Party Methods ---
@@ -944,6 +1018,171 @@ class DatabaseHelper {
       return maps.first['value'] as String?;
     }
     return null;
+  }
+
+  // --- Cash Balance Log CRUD Operations ---
+
+  /// Ensure cash_balance_log table exists (for backwards compatibility)
+  Future<void> _ensureCashBalanceLogTableExists() async {
+    final db = await instance.database;
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS cash_balance_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT NOT NULL,
+        changeType TEXT NOT NULL CHECK(changeType IN ('manual_edit', 'cash_expense', 'day_closing', 'expense_deletion')),
+        oldBalance REAL NOT NULL,
+        newBalance REAL NOT NULL,
+        amount REAL NOT NULL,
+        reason TEXT NOT NULL,
+        details TEXT,
+        createdAt TEXT NOT NULL
+      )
+    ''');
+
+    // Add indexes if they don't exist
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_cash_balance_log_timestamp ON cash_balance_log(timestamp)
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_cash_balance_log_type ON cash_balance_log(changeType)
+    ''');
+  }
+
+  /// Insert a new cash balance log entry
+  Future<int> insertCashBalanceLog(CashBalanceLog log) async {
+    await _ensureCashBalanceLogTableExists();
+    final db = await instance.database;
+    final id = await db.insert('cash_balance_log', log.toMap());
+
+    // Notify listeners of database change
+    DbBus.instance.bump();
+
+    return id;
+  }
+
+  /// Get all cash balance logs ordered by timestamp (newest first)
+  Future<List<CashBalanceLog>> getCashBalanceLogs({int? limit}) async {
+    await _ensureCashBalanceLogTableExists();
+    final db = await instance.database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'cash_balance_log',
+      orderBy: 'timestamp DESC',
+      limit: limit,
+    );
+    return List.generate(maps.length, (i) => CashBalanceLog.fromMap(maps[i]));
+  }
+
+  /// Get cash balance logs within a date range
+  Future<List<CashBalanceLog>> getCashBalanceLogsByDateRange(
+    DateTime startDate,
+    DateTime endDate,
+  ) async {
+    await _ensureCashBalanceLogTableExists();
+    final db = await instance.database;
+    final startDateString = startDate.toIso8601String().substring(0, 10);
+    final endDateString = endDate.toIso8601String().substring(0, 10);
+
+    final List<Map<String, dynamic>> maps = await db.query(
+      'cash_balance_log',
+      where: 'DATE(timestamp) >= ? AND DATE(timestamp) <= ?',
+      whereArgs: [startDateString, endDateString],
+      orderBy: 'timestamp DESC',
+    );
+
+    return List.generate(maps.length, (i) => CashBalanceLog.fromMap(maps[i]));
+  }
+
+  /// Get cash balance logs by change type
+  Future<List<CashBalanceLog>> getCashBalanceLogsByType(
+    CashBalanceChangeType changeType, {
+    int? limit,
+  }) async {
+    await _ensureCashBalanceLogTableExists();
+    final db = await instance.database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'cash_balance_log',
+      where: 'changeType = ?',
+      whereArgs: [changeType.value],
+      orderBy: 'timestamp DESC',
+      limit: limit,
+    );
+
+    return List.generate(maps.length, (i) => CashBalanceLog.fromMap(maps[i]));
+  }
+
+  /// Get cash balance logs for a specific date
+  Future<List<CashBalanceLog>> getCashBalanceLogsForDate(DateTime date) async {
+    await _ensureCashBalanceLogTableExists();
+    final db = await instance.database;
+    final dateString = date.toIso8601String().substring(0, 10);
+
+    final List<Map<String, dynamic>> maps = await db.query(
+      'cash_balance_log',
+      where: 'DATE(timestamp) = ?',
+      whereArgs: [dateString],
+      orderBy: 'timestamp DESC',
+    );
+
+    return List.generate(maps.length, (i) => CashBalanceLog.fromMap(maps[i]));
+  }
+
+  /// Get latest cash balance log entry
+  Future<CashBalanceLog?> getLatestCashBalanceLog() async {
+    await _ensureCashBalanceLogTableExists();
+    final db = await instance.database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'cash_balance_log',
+      orderBy: 'timestamp DESC',
+      limit: 1,
+    );
+
+    if (maps.isNotEmpty) {
+      return CashBalanceLog.fromMap(maps.first);
+    }
+    return null;
+  }
+
+  /// Delete cash balance log entry by id
+  Future<int> deleteCashBalanceLog(int id) async {
+    await _ensureCashBalanceLogTableExists();
+    final db = await instance.database;
+    final result = await db.delete(
+      'cash_balance_log',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+
+    // Notify listeners of database change
+    DbBus.instance.bump();
+
+    return result;
+  }
+
+  /// Get cash balance statistics for a date range
+  Future<Map<String, dynamic>> getCashBalanceLogStats(
+    DateTime startDate,
+    DateTime endDate,
+  ) async {
+    await _ensureCashBalanceLogTableExists();
+    final db = await instance.database;
+    final startDateString = startDate.toIso8601String().substring(0, 10);
+    final endDateString = endDate.toIso8601String().substring(0, 10);
+
+    final result = await db.rawQuery(
+      '''
+      SELECT 
+        changeType,
+        COUNT(*) as count,
+        SUM(amount) as totalAmount,
+        AVG(amount) as avgAmount
+      FROM cash_balance_log 
+      WHERE DATE(timestamp) >= ? AND DATE(timestamp) <= ?
+      GROUP BY changeType
+    ''',
+      [startDateString, endDateString],
+    );
+
+    return {'stats': result, 'startDate': startDate, 'endDate': endDate};
   }
 
   // --- Default Data ---

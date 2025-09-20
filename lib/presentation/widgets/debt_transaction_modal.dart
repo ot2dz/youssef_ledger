@@ -1,16 +1,17 @@
 import 'package:flutter/material.dart';
-import '../../data/local/database_helper.dart';
 import '../../data/models/debt_entry.dart';
 import '../../data/models/party.dart';
+import '../../core/enums.dart';
 import 'package:provider/provider.dart';
 import '../../logic/providers/finance_provider.dart';
 
 /// نموذج إضافة معاملة دين مخصص لطرف معين
 class DebtTransactionModal extends StatefulWidget {
   final Party party;
-  final String transactionKind; // 'purchase_credit', 'payment', 'loan_out', 'settlement'
+  final String
+  transactionKind; // 'purchase_credit', 'payment', 'loan_out', 'settlement'
   final VoidCallback? onTransactionSaved;
-  
+
   const DebtTransactionModal({
     super.key,
     required this.party,
@@ -26,6 +27,7 @@ class _DebtTransactionModalState extends State<DebtTransactionModal> {
   final _formKey = GlobalKey<FormState>();
   final _amountController = TextEditingController();
   final _noteController = TextEditingController();
+  PaymentMethod _selectedPaymentMethod = PaymentMethod.credit; // افتراضياً آجل
   bool _isLoading = false;
 
   @override
@@ -125,7 +127,7 @@ class _DebtTransactionModalState extends State<DebtTransactionModal> {
                 ),
               ),
               const SizedBox(height: 20),
-              
+
               // العنوان مع الأيقونة
               Row(
                 children: [
@@ -144,11 +146,13 @@ class _DebtTransactionModalState extends State<DebtTransactionModal> {
                 ],
               ),
               const SizedBox(height: 24),
-              
+
               // حقل المبلغ
               TextFormField(
                 controller: _amountController,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
                 decoration: InputDecoration(
                   labelText: 'المبلغ',
                   border: const OutlineInputBorder(
@@ -161,14 +165,63 @@ class _DebtTransactionModalState extends State<DebtTransactionModal> {
                   if (value == null || value.isEmpty) {
                     return 'الرجاء إدخال المبلغ';
                   }
-                  if (double.tryParse(value) == null || double.parse(value) <= 0) {
+                  if (double.tryParse(value) == null ||
+                      double.parse(value) <= 0) {
                     return 'الرجاء إدخال مبلغ صحيح';
                   }
                   return null;
                 },
               ),
               const SizedBox(height: 16),
-              
+
+              // حقل طريقة الدفع
+              DropdownButtonFormField<PaymentMethod>(
+                value: _selectedPaymentMethod,
+                decoration: const InputDecoration(
+                  labelText: 'طريقة الدفع',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.all(Radius.circular(12)),
+                  ),
+                  prefixIcon: Icon(Icons.payment),
+                ),
+                items: PaymentMethod.values.map((method) {
+                  String displayName;
+                  IconData icon;
+                  switch (method) {
+                    case PaymentMethod.cash:
+                      displayName = 'نقداً';
+                      icon = Icons.money;
+                      break;
+                    case PaymentMethod.credit:
+                      displayName = 'آجل';
+                      icon = Icons.schedule;
+                      break;
+                    case PaymentMethod.bank:
+                      displayName = 'بنكي';
+                      icon = Icons.account_balance;
+                      break;
+                  }
+                  return DropdownMenuItem(
+                    value: method,
+                    child: Row(
+                      children: [
+                        Icon(icon, size: 20),
+                        const SizedBox(width: 8),
+                        Text(displayName),
+                      ],
+                    ),
+                  );
+                }).toList(),
+                onChanged: (PaymentMethod? newValue) {
+                  if (newValue != null) {
+                    setState(() {
+                      _selectedPaymentMethod = newValue;
+                    });
+                  }
+                },
+              ),
+              const SizedBox(height: 16),
+
               // حقل الملاحظات
               TextFormField(
                 controller: _noteController,
@@ -182,10 +235,10 @@ class _DebtTransactionModalState extends State<DebtTransactionModal> {
                 maxLines: 3,
               ),
               const Spacer(),
-              
+
               // زر الحفظ
               FilledButton.icon(
-                icon: _isLoading 
+                icon: _isLoading
                     ? const SizedBox(
                         width: 20,
                         height: 20,
@@ -218,7 +271,7 @@ class _DebtTransactionModalState extends State<DebtTransactionModal> {
   /// حفظ المعاملة في قاعدة البيانات
   void _saveTransaction() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
-    
+
     setState(() {
       _isLoading = true;
     });
@@ -229,21 +282,22 @@ class _DebtTransactionModalState extends State<DebtTransactionModal> {
         partyId: widget.party.id!,
         kind: widget.transactionKind,
         amount: double.parse(_amountController.text),
+        paymentMethod: _selectedPaymentMethod,
         note: _noteController.text.isNotEmpty ? _noteController.text : null,
         createdAt: DateTime.now(),
       );
-      
-      await DatabaseHelper.instance.createDebtEntry(debtEntry);
+
+      await context.read<FinanceProvider>().addDebtTransaction(debtEntry);
 
       if (mounted) {
         // تحديث البيانات في المزود
         context.read<FinanceProvider>().fetchFinancialDataForSelectedDate();
-        
+
         // تحديث البيانات في الشاشة الحالية
         widget.onTransactionSaved?.call();
-        
+
         Navigator.of(context).pop(true);
-        
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('تم حفظ ${_getSuccessMessage()} بنجاح'),
