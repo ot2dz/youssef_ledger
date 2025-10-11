@@ -5,7 +5,7 @@ import 'package:workmanager/workmanager.dart';
 import 'package:youssef_fabric_ledger/data/local/database_helper.dart';
 import 'package:youssef_fabric_ledger/logic/providers/date_provider.dart';
 import 'package:youssef_fabric_ledger/logic/providers/finance_provider.dart';
-import 'package:youssef_fabric_ledger/presentation/screens/main_layout.dart';
+import 'package:youssef_fabric_ledger/presentation/screens/app_wrapper.dart';
 import 'package:youssef_fabric_ledger/presentation/theme/app_theme.dart';
 
 // This callback is executed in a separate isolate when the background task runs.
@@ -26,6 +26,14 @@ void main() async {
 
   // Run a one-time diagnostic to check for invalid party types in the database.
   await DatabaseHelper.instance.logInvalidPartyTypes();
+
+  // Clean up duplicate categories on app startup
+  try {
+    await DatabaseHelper.instance.cleanupDuplicateData();
+    print('✅ تم تنظيف البيانات المكررة بنجاح');
+  } catch (e) {
+    print('⚠️ تعذر تنظيف البيانات المكررة: $e');
+  }
 
   // Initialize Workmanager for background tasks.
   Workmanager().initialize(callbackDispatcher, isInDebugMode: true);
@@ -58,7 +66,7 @@ class MyApp extends StatelessWidget {
         ),
       ],
       child: MaterialApp(
-        title: 'دفتر أقمشة يوسف',
+        title: 'دفتر التاجر',
         debugShowCheckedModeBanner: false,
         theme: AppTheme.lightTheme,
         // --- Arabic Language and RTL Support ---
@@ -72,7 +80,7 @@ class MyApp extends StatelessWidget {
           Locale('ar', ''), // Arabic
         ],
         locale: const Locale('en', ''), // Force English locale for Latin digits
-        home: const MainLayout(),
+        home: const AppWrapper(),
       ),
     );
   }

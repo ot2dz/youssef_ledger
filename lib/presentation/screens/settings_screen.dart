@@ -1,6 +1,7 @@
-// lib/presentation/screens/settings_screen.dart
 import 'package:flutter/material.dart';
 import 'package:youssef_fabric_ledger/presentation/screens/manage_categories_screen.dart';
+import 'package:youssef_fabric_ledger/presentation/screens/neon_backup_screen.dart';
+import '../../data/local/database_helper.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -48,13 +49,25 @@ class SettingsScreen extends StatelessWidget {
               _buildSettingsCard(
                 context,
                 icon: Icons.backup_rounded,
-                title: 'النسخ الاحتياطي',
-                subtitle: 'نسخ واستعادة البيانات',
+                title: 'النسخ الاحتياطي السحابي',
+                subtitle: 'نسخ واستعادة البيانات باستخدام Neon Database',
                 onTap: () {
-                  // TODO: Implement backup functionality
-                  ScaffoldMessenger.of(
+                  Navigator.push(
                     context,
-                  ).showSnackBar(const SnackBar(content: Text('قريباً...')));
+                    MaterialPageRoute(
+                      builder: (context) => const NeonBackupScreen(),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 12),
+              _buildSettingsCard(
+                context,
+                icon: Icons.cleaning_services_rounded,
+                title: 'تنظيف البيانات المكررة',
+                subtitle: 'إزالة الفئات والبيانات المكررة من قاعدة البيانات',
+                onTap: () {
+                  _cleanupDuplicateData(context);
                 },
               ),
               const SizedBox(height: 12),
@@ -160,7 +173,7 @@ class SettingsScreen extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'دفتر أقمشة يوسف',
+              'دفتر التاجر',
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.bold,
@@ -171,7 +184,7 @@ class SettingsScreen extends StatelessWidget {
             Text('الإصدار: 1.0.0', style: TextStyle(color: Color(0xFF6B7280))),
             SizedBox(height: 16),
             Text(
-              'تطبيق لإدارة الشؤون المالية لمحل الأقمشة',
+              'تطبيق لإدارة الشؤون المالية لمحل الأقمشة مع نظام نسخ احتياطي سحابي متطور',
               style: TextStyle(color: Color(0xFF6B7280)),
             ),
           ],
@@ -191,5 +204,77 @@ class SettingsScreen extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  /// تنظيف البيانات المكررة
+  Future<void> _cleanupDuplicateData(BuildContext context) async {
+    // عرض حوار التأكيد
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('تنظيف البيانات المكررة'),
+        content: const Text(
+          'هل تريد إزالة جميع الفئات والبيانات المكررة من قاعدة البيانات؟\n\nهذه العملية آمنة ولن تحذف أي بيانات مهمة.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('إلغاء'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('تنظيف'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    // عرض حوار التحميل
+    if (context.mounted) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const AlertDialog(
+          content: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(width: 20),
+              Text('جاري تنظيف البيانات...'),
+            ],
+          ),
+        ),
+      );
+    }
+
+    try {
+      await DatabaseHelper.instance.cleanupDuplicateData();
+
+      if (context.mounted) {
+        Navigator.of(context).pop(); // إغلاق حوار التحميل
+
+        // عرض رسالة النجاح
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✅ تم تنظيف البيانات المكررة بنجاح!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        Navigator.of(context).pop(); // إغلاق حوار التحميل
+
+        // عرض رسالة الخطأ
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ خطأ في تنظيف البيانات: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 }

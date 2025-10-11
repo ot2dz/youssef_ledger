@@ -27,14 +27,41 @@ class _DebtTransactionModalState extends State<DebtTransactionModal> {
   final _formKey = GlobalKey<FormState>();
   final _amountController = TextEditingController();
   final _noteController = TextEditingController();
-  PaymentMethod _selectedPaymentMethod = PaymentMethod.credit; // افتراضياً آجل
+  late PaymentMethod _selectedPaymentMethod;
   bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // تحديد الطريقة الافتراضية حسب نوع الطرف ونوع المعاملة
+    _selectedPaymentMethod = _getDefaultPaymentMethod();
+  }
 
   @override
   void dispose() {
     _amountController.dispose();
     _noteController.dispose();
     super.dispose();
+  }
+
+  /// تحديد طريقة الدفع الافتراضية حسب نوع الطرف والمعاملة
+  PaymentMethod _getDefaultPaymentMethod() {
+    // للموردين: دائماً نقداً في القروض والاستلام
+    if (widget.party.role == PartyRole.vendor) {
+      return PaymentMethod.cash;
+    }
+
+    // للأشخاص: حسب نوع المعاملة
+    switch (widget.transactionKind) {
+      case 'loan_out':
+      case 'settlement':
+        return PaymentMethod.cash; // الإقراض والاستلام عادة نقداً
+      case 'purchase_credit':
+      case 'payment':
+        return PaymentMethod.credit; // الشراء والدفع عادة آجل
+      default:
+        return PaymentMethod.cash;
+    }
   }
 
   /// الحصول على عنوان النموذج بناءً على نوع المعاملة

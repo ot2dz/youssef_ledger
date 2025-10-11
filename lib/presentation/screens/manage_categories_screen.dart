@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_iconpicker/flutter_iconpicker.dart';
 import 'package:youssef_fabric_ledger/data/local/database_helper.dart';
 import 'package:youssef_fabric_ledger/data/models/category.dart';
+import 'package:youssef_fabric_ledger/core/utils/icon_utils.dart';
 
 class ManageCategoriesScreen extends StatefulWidget {
   const ManageCategoriesScreen({super.key});
@@ -74,12 +75,7 @@ class ManageCategoriesScreenState extends State<ManageCategoriesScreen> {
               itemBuilder: (context, index) {
                 final category = categories[index];
                 return ListTile(
-                  leading: Icon(
-                    IconData(
-                      category.iconCodePoint,
-                      fontFamily: 'MaterialIcons',
-                    ),
-                  ),
+                  leading: Icon(getIconFromCodePoint(category.iconCodePoint)),
                   title: Text(category.name),
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
@@ -115,7 +111,7 @@ class ManageCategoriesScreenState extends State<ManageCategoriesScreen> {
     final isEditing = category != null;
     final nameController = TextEditingController(text: category?.name);
     IconData? selectedIcon = isEditing
-        ? IconData(category.iconCodePoint, fontFamily: 'MaterialIcons')
+        ? getIconFromCodePoint(category.iconCodePoint)
         : null;
 
     showDialog(

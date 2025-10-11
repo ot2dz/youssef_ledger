@@ -258,11 +258,8 @@ class _DebtsScreenState extends State<DebtsScreen>
           ),
           body: Column(
             children: [
-              // Stats card
-              const Padding(
-                padding: EdgeInsets.all(16),
-                child: DebtsStatsCard(),
-              ),
+              // Stats card - تصميم مدمج
+              const DebtsStatsCard(),
               // Tabs content
               Expanded(
                 child: AnimatedBuilder(

@@ -7,8 +7,8 @@ import '../../data/models/drawer_snapshot.dart';
 import '../../data/local/database_helper.dart';
 import '../../logic/providers/finance_provider.dart';
 import '../../data/models/category.dart';
-import 'package:intl/intl.dart' hide TextDirection;
 import '../../core/formatters/date_formatters.dart';
+import '../../core/utils/icon_utils.dart';
 
 class AddTransactionModal extends StatefulWidget {
   // --- ✅ الإضافة هنا ---
@@ -193,12 +193,7 @@ class ExpenseFormState extends State<ExpenseForm> {
                   value: category.id,
                   child: Row(
                     children: [
-                      Icon(
-                        IconData(
-                          category.iconCodePoint,
-                          fontFamily: 'MaterialIcons',
-                        ),
-                      ),
+                      Icon(getIconFromCodePoint(category.iconCodePoint)),
                       SizedBox(width: 8),
                       Text(category.name),
                     ],
@@ -379,7 +374,8 @@ class IncomeFormState extends State<IncomeForm> {
   final _amountController = TextEditingController();
   final _noteController = TextEditingController();
   DateTime _selectedDate = DateTime.now();
-  TransactionSource _selectedSource = TransactionSource.drawer;
+  TransactionSource _selectedSource =
+      TransactionSource.cash; // تغيير من drawer إلى cash
   bool _isLoading = false;
 
   @override
@@ -421,6 +417,10 @@ class IncomeFormState extends State<IncomeForm> {
                 border: OutlineInputBorder(),
               ),
               items: const [
+                DropdownMenuItem(
+                  value: TransactionSource.cash,
+                  child: Text('نقداً'),
+                ),
                 DropdownMenuItem(
                   value: TransactionSource.drawer,
                   child: Text('درج'),
@@ -513,14 +513,14 @@ class IncomeFormState extends State<IncomeForm> {
         createdAt: DateTime.now(),
       );
 
-      await DatabaseHelper.instance.createIncome(income);
+      // Use the new addIncome method which handles cash balance updates
+      final financeProvider = Provider.of<FinanceProvider>(
+        context,
+        listen: false,
+      );
+      await financeProvider.addIncome(income);
 
-      // تحديث البيانات في المزود
       if (mounted) {
-        await Provider.of<FinanceProvider>(
-          context,
-          listen: false,
-        ).refreshTodayData();
         Navigator.pop(context, true); // Return true to indicate success
         ScaffoldMessenger.of(
           context,

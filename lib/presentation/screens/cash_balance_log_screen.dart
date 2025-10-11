@@ -240,6 +240,10 @@ class _CashBalanceLogScreenState extends State<CashBalanceLogScreen> {
         typeIcon = Icons.account_balance_wallet;
         typeColor = Colors.teal;
         break;
+      case CashBalanceChangeType.cashIncome:
+        typeIcon = Icons.attach_money;
+        typeColor = Colors.green;
+        break;
     }
 
     return Card(
@@ -667,6 +671,8 @@ class _CashBalanceLogScreenState extends State<CashBalanceLogScreen> {
         return 'تحصيل دين نقدي';
       case CashBalanceChangeType.debtCollection:
         return 'دفع دين نقدي';
+      case CashBalanceChangeType.cashIncome:
+        return 'دخل نقدي';
     }
   }
 }

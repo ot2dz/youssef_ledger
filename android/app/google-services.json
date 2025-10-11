@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "802399365955",
+    "project_id": "youssef-fabric-ledger-6bb68",
+    "storage_bucket": "youssef-fabric-ledger-6bb68.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:802399365955:android:eef881e82844523aa01df6",
+        "android_client_info": {
+          "package_name": "com.example.youssef_fabric_ledger"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDkgdbofZC4beOe7MNxeuJTjMgUvXCWDxc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -105,7 +105,7 @@ class DatabaseHelper {
     final path = join(dbPath, filePath);
     return await openDatabase(
       path,
-      version: 7, // <-- Incremented for debt payment method feature
+      version: 11, // <-- Incremented for is_hidden support
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
     );
@@ -125,7 +125,8 @@ class DatabaseHelper {
         categoryId INTEGER NOT NULL,
         source TEXT NOT NULL CHECK(source IN ('cash', 'drawer', 'bank')),
         note TEXT,
-        createdAt TEXT NOT NULL
+        createdAt TEXT NOT NULL,
+        is_hidden INTEGER DEFAULT 0 NOT NULL CHECK(is_hidden IN (0, 1))
       )
     ''');
 
@@ -134,7 +135,8 @@ class DatabaseHelper {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         iconCodePoint INTEGER NOT NULL,
-        type TEXT NOT NULL CHECK(type IN ('expense', 'income'))
+        type TEXT NOT NULL CHECK(type IN ('expense', 'income')),
+        UNIQUE(name, type)
       )
     ''');
 
@@ -146,7 +148,8 @@ class DatabaseHelper {
         amount REAL NOT NULL,
         source TEXT NOT NULL CHECK(source IN ('cash', 'drawer', 'bank')),
         note TEXT,
-        createdAt TEXT NOT NULL
+        createdAt TEXT NOT NULL,
+        is_hidden INTEGER DEFAULT 0 NOT NULL CHECK(is_hidden IN (0, 1))
       )
     ''');
 
@@ -189,13 +192,41 @@ class DatabaseHelper {
       CREATE TABLE cash_balance_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         timestamp TEXT NOT NULL,
-        changeType TEXT NOT NULL CHECK(changeType IN ('manual_edit', 'cash_expense', 'day_closing', 'expense_deletion', 'debt_payment', 'debt_collection')),
+        changeType TEXT NOT NULL CHECK(changeType IN ('manual_edit', 'cash_expense', 'day_closing', 'expense_deletion', 'debt_payment', 'debt_collection', 'cash_income')),
         oldBalance REAL NOT NULL,
         newBalance REAL NOT NULL,
         amount REAL NOT NULL,
         reason TEXT NOT NULL,
         details TEXT,
         createdAt TEXT NOT NULL
+      )
+    ''');
+
+    // Create bank transactions table
+    await db.execute('''
+      CREATE TABLE bank_transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        type TEXT NOT NULL CHECK(type IN ('credit', 'debit', 'transfer', 'fee', 'interest')),
+        amount REAL NOT NULL,
+        accountNumber TEXT NOT NULL,
+        bankName TEXT NOT NULL,
+        reference TEXT,
+        description TEXT,
+        category TEXT DEFAULT 'uncategorized',
+        transactionDate TEXT NOT NULL,
+        processedDate TEXT NOT NULL,
+        balance REAL,
+        isReconciled INTEGER DEFAULT 0,
+        relatedInvoiceId INTEGER,
+        relatedDebtId INTEGER,
+        exchangeRate REAL DEFAULT 1.0,
+        originalCurrency TEXT DEFAULT 'USD',
+        tags TEXT,
+        metadata TEXT,
+        attachments TEXT,
+        isInternal INTEGER DEFAULT 0,
+        createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       )
     ''');
 
@@ -312,7 +343,7 @@ class DatabaseHelper {
         CREATE TABLE cash_balance_log (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           timestamp TEXT NOT NULL,
-          changeType TEXT NOT NULL CHECK(changeType IN ('manual_edit', 'cash_expense', 'day_closing', 'expense_deletion', 'debt_payment', 'debt_collection')),
+          changeType TEXT NOT NULL CHECK(changeType IN ('manual_edit', 'cash_expense', 'day_closing', 'expense_deletion', 'debt_payment', 'debt_collection', 'cash_income')),
           oldBalance REAL NOT NULL,
           newBalance REAL NOT NULL,
           amount REAL NOT NULL,
@@ -347,6 +378,160 @@ class DatabaseHelper {
       ''');
 
       debugPrint('[DB-MIGRATION] Version 7 migration completed successfully');
+    }
+
+    if (oldVersion < 8) {
+      // Add bank transactions table
+      debugPrint('[DB-MIGRATION] Upgrading to version 8: Bank transactions');
+
+      await db.execute('''
+        CREATE TABLE bank_transactions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          type TEXT NOT NULL CHECK(type IN ('credit', 'debit', 'transfer', 'fee', 'interest')),
+          amount REAL NOT NULL,
+          accountNumber TEXT NOT NULL,
+          bankName TEXT NOT NULL,
+          reference TEXT,
+          description TEXT,
+          category TEXT DEFAULT 'uncategorized',
+          transactionDate TEXT NOT NULL,
+          processedDate TEXT NOT NULL,
+          balance REAL,
+          isReconciled INTEGER DEFAULT 0,
+          relatedInvoiceId INTEGER,
+          relatedDebtId INTEGER,
+          exchangeRate REAL DEFAULT 1.0,
+          originalCurrency TEXT DEFAULT 'USD',
+          tags TEXT,
+          metadata TEXT,
+          attachments TEXT,
+          isInternal INTEGER DEFAULT 0,
+          createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+      ''');
+
+      // Create indexes for performance
+      await db.execute('''
+        CREATE INDEX IF NOT EXISTS idx_bank_transactions_type ON bank_transactions(type)
+      ''');
+
+      await db.execute('''
+        CREATE INDEX IF NOT EXISTS idx_bank_transactions_date ON bank_transactions(transactionDate)
+      ''');
+
+      await db.execute('''
+        CREATE INDEX IF NOT EXISTS idx_bank_transactions_account ON bank_transactions(accountNumber)
+      ''');
+
+      await db.execute('''
+        CREATE INDEX IF NOT EXISTS idx_bank_transactions_bank ON bank_transactions(bankName)
+      ''');
+
+      debugPrint('[DB-MIGRATION] Version 8 migration completed successfully');
+    }
+
+    if (oldVersion < 9) {
+      // Add unique constraint to categories to prevent duplicates
+      debugPrint(
+        '[DB-MIGRATION] Upgrading to version 9: Categories unique constraint',
+      );
+
+      // Since SQLite doesn't support ADD CONSTRAINT, recreate table
+      await db.execute('PRAGMA foreign_keys=off;');
+      await db.transaction((txn) async {
+        // Create new categories table with unique constraint
+        await txn.execute('''
+          CREATE TABLE categories_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            iconCodePoint INTEGER NOT NULL,
+            type TEXT NOT NULL CHECK(type IN ('expense', 'income')),
+            UNIQUE(name, type)
+          )
+        ''');
+
+        // Copy unique categories only (remove duplicates during migration)
+        await txn.execute('''
+          INSERT OR IGNORE INTO categories_new(id, name, iconCodePoint, type)
+          SELECT MIN(id), name, iconCodePoint, type
+          FROM categories
+          GROUP BY name, type
+        ''');
+
+        // Drop old table and rename new one
+        await txn.execute('DROP TABLE categories;');
+        await txn.execute('ALTER TABLE categories_new RENAME TO categories;');
+      });
+      await db.execute('PRAGMA foreign_keys=on;');
+
+      debugPrint('[DB-MIGRATION] Version 9 migration completed successfully');
+    }
+
+    if (oldVersion < 10) {
+      // Add cash_income support to cash_balance_log
+      debugPrint('[DB-MIGRATION] Upgrading to version 10: Cash income support');
+
+      // SQLite doesn't support modifying CHECK constraints, so we need to recreate the table
+      await db.execute('PRAGMA foreign_keys=off;');
+      await db.transaction((txn) async {
+        // Create new cash_balance_log table with updated CHECK constraint
+        await txn.execute('''
+          CREATE TABLE cash_balance_log_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            changeType TEXT NOT NULL CHECK(changeType IN ('manual_edit', 'cash_expense', 'day_closing', 'expense_deletion', 'debt_payment', 'debt_collection', 'cash_income')),
+            oldBalance REAL NOT NULL,
+            newBalance REAL NOT NULL,
+            amount REAL NOT NULL,
+            reason TEXT NOT NULL,
+            details TEXT,
+            createdAt TEXT NOT NULL
+          )
+        ''');
+
+        // Copy existing data
+        await txn.execute('''
+          INSERT INTO cash_balance_log_new
+          SELECT * FROM cash_balance_log
+        ''');
+
+        // Drop old table and rename new one
+        await txn.execute('DROP TABLE cash_balance_log;');
+        await txn.execute(
+          'ALTER TABLE cash_balance_log_new RENAME TO cash_balance_log;',
+        );
+
+        // Recreate indexes
+        await txn.execute('''
+          CREATE INDEX IF NOT EXISTS idx_cash_balance_log_timestamp ON cash_balance_log(timestamp)
+        ''');
+        await txn.execute('''
+          CREATE INDEX IF NOT EXISTS idx_cash_balance_log_type ON cash_balance_log(changeType)
+        ''');
+      });
+      await db.execute('PRAGMA foreign_keys=on;');
+
+      debugPrint('[DB-MIGRATION] Version 10 migration completed successfully');
+    }
+
+    if (oldVersion < 11) {
+      // Add is_hidden support to expenses and income tables
+      debugPrint(
+        '[DB-MIGRATION] Upgrading to version 11: Hidden transactions support',
+      );
+
+      // Add is_hidden column to expenses table
+      await db.execute('''
+        ALTER TABLE expenses ADD COLUMN is_hidden INTEGER DEFAULT 0 NOT NULL CHECK(is_hidden IN (0, 1))
+      ''');
+
+      // Add is_hidden column to income table
+      await db.execute('''
+        ALTER TABLE income ADD COLUMN is_hidden INTEGER DEFAULT 0 NOT NULL CHECK(is_hidden IN (0, 1))
+      ''');
+
+      debugPrint('[DB-MIGRATION] Version 11 migration completed successfully');
     }
   }
 
@@ -695,7 +880,25 @@ class DatabaseHelper {
   // --- CRUD for Categories ---
   Future<Category> createCategory(Category category) async {
     final db = await instance.database;
-    final id = await db.insert('categories', category.toMap());
+    final id = await db.insert(
+      'categories',
+      category.toMap(),
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+
+    // If insert was ignored due to unique constraint, get existing category
+    if (id == 0) {
+      final existing = await db.query(
+        'categories',
+        where: 'name = ? AND type = ?',
+        whereArgs: [category.name, category.type],
+        limit: 1,
+      );
+      if (existing.isNotEmpty) {
+        return Category.fromMap(existing.first);
+      }
+    }
+
     return category.copyWith(id: id);
   }
 
@@ -755,7 +958,7 @@ class DatabaseHelper {
     ).toIso8601String();
     final maps = await db.query(
       'expenses',
-      where: 'date >= ? AND date < ?',
+      where: 'date >= ? AND date < ? AND (is_hidden IS NULL OR is_hidden = 0)',
       whereArgs: [dateStart, dateEnd],
       orderBy: 'createdAt DESC',
     );
@@ -769,7 +972,7 @@ class DatabaseHelper {
     final db = await instance.database;
     final maps = await db.query(
       'expenses',
-      where: 'date >= ? AND date < ?',
+      where: 'date >= ? AND date < ? AND (is_hidden IS NULL OR is_hidden = 0)',
       whereArgs: [startDate.toIso8601String(), endDate.toIso8601String()],
       orderBy: 'date DESC',
     );
@@ -826,7 +1029,7 @@ class DatabaseHelper {
     ).toIso8601String();
     final maps = await db.query(
       'income',
-      where: 'date >= ? AND date < ?',
+      where: 'date >= ? AND date < ? AND (is_hidden IS NULL OR is_hidden = 0)',
       whereArgs: [dateStart, dateEnd],
       orderBy: 'createdAt DESC',
     );
@@ -840,7 +1043,7 @@ class DatabaseHelper {
     final db = await instance.database;
     final maps = await db.query(
       'income',
-      where: 'date >= ? AND date < ?',
+      where: 'date >= ? AND date < ? AND (is_hidden IS NULL OR is_hidden = 0)',
       whereArgs: [startDate.toIso8601String(), endDate.toIso8601String()],
       orderBy: 'date DESC',
     );
@@ -1185,6 +1388,217 @@ class DatabaseHelper {
     return {'stats': result, 'startDate': startDate, 'endDate': endDate};
   }
 
+  // --- CRUD for Bank Transactions ---
+  Future<int> createBankTransaction(Map<String, dynamic> transaction) async {
+    final db = await instance.database;
+
+    // Add timestamps if not provided
+    final now = DateTime.now().toIso8601String();
+    transaction['createdAt'] = transaction['createdAt'] ?? now;
+    transaction['updatedAt'] = now;
+
+    debugPrint(
+      '[createBankTransaction] type=${transaction['type']} amount=${transaction['amount']} bank=${transaction['bankName']}',
+    );
+
+    final id = await db.insert('bank_transactions', transaction);
+
+    // Notify listeners of database change
+    DbBus.instance.bump();
+
+    return id;
+  }
+
+  Future<List<Map<String, dynamic>>> getBankTransactions({
+    String? accountNumber,
+    String? bankName,
+    String? type,
+    String? startDate,
+    String? endDate,
+    int? limit,
+    int? offset,
+  }) async {
+    final db = await instance.database;
+
+    String whereClause = '';
+    List<dynamic> whereArgs = [];
+
+    if (accountNumber != null) {
+      whereClause += 'accountNumber = ?';
+      whereArgs.add(accountNumber);
+    }
+
+    if (bankName != null) {
+      if (whereClause.isNotEmpty) whereClause += ' AND ';
+      whereClause += 'bankName = ?';
+      whereArgs.add(bankName);
+    }
+
+    if (type != null) {
+      if (whereClause.isNotEmpty) whereClause += ' AND ';
+      whereClause += 'type = ?';
+      whereArgs.add(type);
+    }
+
+    if (startDate != null) {
+      if (whereClause.isNotEmpty) whereClause += ' AND ';
+      whereClause += 'transactionDate >= ?';
+      whereArgs.add(startDate);
+    }
+
+    if (endDate != null) {
+      if (whereClause.isNotEmpty) whereClause += ' AND ';
+      whereClause += 'transactionDate <= ?';
+      whereArgs.add(endDate);
+    }
+
+    return await db.query(
+      'bank_transactions',
+      where: whereClause.isEmpty ? null : whereClause,
+      whereArgs: whereArgs.isEmpty ? null : whereArgs,
+      orderBy: 'transactionDate DESC, id DESC',
+      limit: limit,
+      offset: offset,
+    );
+  }
+
+  Future<Map<String, dynamic>?> getBankTransactionById(int id) async {
+    final db = await instance.database;
+    final result = await db.query(
+      'bank_transactions',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+
+    return result.isNotEmpty ? result.first : null;
+  }
+
+  Future<int> updateBankTransaction(
+    int id,
+    Map<String, dynamic> transaction,
+  ) async {
+    final db = await instance.database;
+
+    // Update timestamp
+    transaction['updatedAt'] = DateTime.now().toIso8601String();
+
+    final result = await db.update(
+      'bank_transactions',
+      transaction,
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+
+    // Notify listeners of database change
+    DbBus.instance.bump();
+
+    return result;
+  }
+
+  Future<int> deleteBankTransaction(int id) async {
+    final db = await instance.database;
+    final result = await db.delete(
+      'bank_transactions',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+
+    // Notify listeners of database change
+    DbBus.instance.bump();
+
+    return result;
+  }
+
+  /// Get bank transaction statistics for a date range
+  Future<Map<String, dynamic>> getBankTransactionStats({
+    String? accountNumber,
+    String? bankName,
+    DateTime? startDate,
+    DateTime? endDate,
+  }) async {
+    final db = await instance.database;
+
+    String whereClause = '';
+    List<dynamic> whereArgs = [];
+
+    if (accountNumber != null) {
+      whereClause += 'accountNumber = ?';
+      whereArgs.add(accountNumber);
+    }
+
+    if (bankName != null) {
+      if (whereClause.isNotEmpty) whereClause += ' AND ';
+      whereClause += 'bankName = ?';
+      whereArgs.add(bankName);
+    }
+
+    if (startDate != null) {
+      if (whereClause.isNotEmpty) whereClause += ' AND ';
+      whereClause += 'transactionDate >= ?';
+      whereArgs.add(startDate.toIso8601String().split('T')[0]);
+    }
+
+    if (endDate != null) {
+      if (whereClause.isNotEmpty) whereClause += ' AND ';
+      whereClause += 'transactionDate <= ?';
+      whereArgs.add(endDate.toIso8601String().split('T')[0]);
+    }
+
+    final result = await db.rawQuery('''
+      SELECT 
+        type,
+        COUNT(*) as count,
+        SUM(amount) as total,
+        AVG(amount) as average,
+        MIN(amount) as minimum,
+        MAX(amount) as maximum
+      FROM bank_transactions
+      ${whereClause.isNotEmpty ? 'WHERE $whereClause' : ''}
+      GROUP BY type
+    ''', whereArgs);
+
+    return {
+      'stats': result,
+      'accountNumber': accountNumber,
+      'bankName': bankName,
+      'startDate': startDate,
+      'endDate': endDate,
+    };
+  }
+
+  /// Get all unique bank accounts
+  Future<List<Map<String, dynamic>>> getBankAccounts() async {
+    final db = await instance.database;
+    return await db.rawQuery('''
+      SELECT DISTINCT accountNumber, bankName, 
+             COUNT(*) as transactionCount,
+             SUM(CASE WHEN type = 'credit' THEN amount ELSE -amount END) as balance
+      FROM bank_transactions 
+      GROUP BY accountNumber, bankName
+      ORDER BY bankName, accountNumber
+    ''');
+  }
+
+  /// Mark bank transaction as reconciled
+  Future<int> reconcileBankTransaction(int id, bool isReconciled) async {
+    final db = await instance.database;
+    final result = await db.update(
+      'bank_transactions',
+      {
+        'isReconciled': isReconciled ? 1 : 0,
+        'updatedAt': DateTime.now().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+
+    // Notify listeners of database change
+    DbBus.instance.bump();
+
+    return result;
+  }
+
   // --- Default Data ---
   Future<void> _insertDefaultCategories(Database db) async {
     final categories = [
@@ -1202,5 +1616,54 @@ class DatabaseHelper {
         'type': cat['type'] as String,
       }, conflictAlgorithm: ConflictAlgorithm.ignore);
     }
+  }
+
+  /// إزالة الفئات المكررة من قاعدة البيانات
+  Future<void> removeDuplicateCategories() async {
+    final db = await database;
+
+    print('🔄 بدء إزالة الفئات المكررة...');
+
+    // الحصول على جميع الفئات مع عدد التكرار
+    final duplicates = await db.rawQuery('''
+      SELECT name, type, MIN(id) as keep_id, COUNT(*) as count
+      FROM categories 
+      GROUP BY name, type 
+      HAVING COUNT(*) > 1
+    ''');
+
+    print('📊 تم العثور على ${duplicates.length} فئة مكررة');
+
+    for (var duplicate in duplicates) {
+      final name = duplicate['name'] as String;
+      final type = duplicate['type'] as String;
+      final keepId = duplicate['keep_id'] as int;
+      final count = duplicate['count'] as int;
+
+      print('🗑️ إزالة ${count - 1} نسخة مكررة من فئة "$name" ($type)');
+
+      // حذف جميع النسخ المكررة عدا الأولى
+      await db.delete(
+        'categories',
+        where: 'name = ? AND type = ? AND id != ?',
+        whereArgs: [name, type, keepId],
+      );
+    }
+
+    // الحصول على العدد النهائي
+    final finalCount = await db.rawQuery(
+      'SELECT COUNT(*) as count FROM categories',
+    );
+    final totalCategories = finalCount.first['count'] as int;
+
+    print('✅ تم الانتهاء! إجمالي الفئات الآن: $totalCategories');
+  }
+
+  /// تنظيف جميع البيانات المكررة
+  Future<void> cleanupDuplicateData() async {
+    await removeDuplicateCategories();
+
+    // يمكن إضافة تنظيف البيانات المكررة الأخرى هنا
+    // مثل الأشخاص والموردين إذا لزم الأمر
   }
 }

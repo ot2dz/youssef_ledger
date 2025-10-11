@@ -3,6 +3,7 @@ import 'package:youssef_fabric_ledger/core/enums.dart';
 import 'package:youssef_fabric_ledger/data/local/database_helper.dart';
 import 'package:youssef_fabric_ledger/data/models/drawer_snapshot.dart';
 import 'package:youssef_fabric_ledger/data/models/expense.dart';
+import 'package:youssef_fabric_ledger/data/models/income.dart';
 import 'package:youssef_fabric_ledger/data/models/debt_entry.dart';
 import 'package:youssef_fabric_ledger/logic/providers/date_provider.dart';
 import 'package:youssef_fabric_ledger/models/cash_balance_log.dart';
@@ -326,6 +327,39 @@ class FinanceProvider with ChangeNotifier {
     }
   }
 
+  /// Adds income and updates total cash balance if it's a cash income
+  Future<Income> addIncome(Income income) async {
+    // Save the income in the database
+    final savedIncome = await dbHelper.createIncome(income);
+
+    // If it's cash income, update the total cash balance immediately
+    if (income.source == TransactionSource.cash && income.amount > 0) {
+      final oldBalance = _totalCashBalance;
+      final newBalance = oldBalance + income.amount;
+
+      await _logAndUpdateCashBalance(
+        oldBalance: oldBalance,
+        newBalance: newBalance,
+        changeType: CashBalanceChangeType.cashIncome,
+        reason: 'دخل نقدي: ${income.note}',
+        details: 'مبلغ: ${income.amount}',
+      );
+
+      debugPrint(
+        '[FINANCE] Cash income added: ${income.amount}, New total balance: $newBalance',
+      );
+    }
+
+    // Refresh the data if it's for the selected date
+    if (dateProvider.isSameDay(income.date, dateProvider.selectedDate)) {
+      await fetchFinancialDataForSelectedDate();
+    } else {
+      notifyListeners();
+    }
+
+    return savedIncome;
+  }
+
   /// Handles the closing of a day by adding daily income to total cash balance
   Future<void> _handleDayClosing(DateTime closingDate) async {
     // Calculate the daily income for the closing date
@@ -545,8 +579,14 @@ class FinanceProvider with ChangeNotifier {
     late final String details;
 
     // Determine if this is a payment (decreases cash) or collection (increases cash)
+    // payment: تسديد دين للمورد (أدفع مال)
+    // purchase_credit: شراء بالدين لكن أدفع نقداً (أدفع مال)
+    // loan_out: إقراض شخص (أعطيه مال من رصيدي - أدفع مال)
+    // settlement: استلام من مدين (أستلم مال)
     final isPayment =
-        debtEntry.kind == 'payment' || debtEntry.kind == 'purchase_credit';
+        debtEntry.kind == 'payment' ||
+        debtEntry.kind == 'purchase_credit' ||
+        debtEntry.kind == 'loan_out';
 
     if (isPayment) {
       // Payment: decrease cash balance
@@ -584,6 +624,8 @@ class FinanceProvider with ChangeNotifier {
         return 'تسديد دفعة دين';
       case 'purchase_credit':
         return 'شراء بالدين (دفع نقداً)';
+      case 'loan_out':
+        return 'إقراض مبلغ نقداً';
       default:
         return 'دفع دين';
     }
@@ -594,8 +636,6 @@ class FinanceProvider with ChangeNotifier {
     switch (debtEntry.kind) {
       case 'settlement':
         return 'استلام دفعة من مدين';
-      case 'loan_out':
-        return 'استلام قرض مُسدد';
       default:
         return 'استلام من مدين';
     }
@@ -609,5 +649,103 @@ class FinanceProvider with ChangeNotifier {
     } catch (e) {
       return 'غير معروف';
     }
+  }
+
+  /// إعادة تعيين جميع بيانات اليوم المحدد
+  Future<void> resetDayData(DateTime selectedDate) async {
+    try {
+      debugPrint(
+        '[RESET_DAY] بدء إعادة تعيين بيانات يوم ${selectedDate.toString()}',
+      );
+
+      // تحديد نطاق اليوم
+      final startOfDay = DateTime(
+        selectedDate.year,
+        selectedDate.month,
+        selectedDate.day,
+      );
+      final endOfDay = DateTime(
+        selectedDate.year,
+        selectedDate.month,
+        selectedDate.day,
+        23,
+        59,
+        59,
+      );
+
+      // إخفاء جميع المصاريف لهذا اليوم (بدلاً من حذفها)
+      final expenses = await dbHelper.getExpensesForDateRange(
+        startOfDay,
+        endOfDay,
+      );
+      final db = await dbHelper.database;
+
+      for (final expense in expenses) {
+        if (expense.id != null && !expense.isHidden) {
+          await db.update(
+            'expenses',
+            {'is_hidden': 1},
+            where: 'id = ?',
+            whereArgs: [expense.id],
+          );
+        }
+      }
+      debugPrint('[إغلاق_اليوم] تم إخفاء ${expenses.length} مصروف');
+
+      // إخفاء جميع المداخيل لهذا اليوم (بدلاً من حذفها)
+      final incomes = await dbHelper.getIncomeForDateRange(
+        startOfDay,
+        endOfDay,
+      );
+      for (final income in incomes) {
+        if (income.id != null && !income.isHidden) {
+          await db.update(
+            'income',
+            {'is_hidden': 1},
+            where: 'id = ?',
+            whereArgs: [income.id],
+          );
+        }
+      }
+      debugPrint('[إغلاق_اليوم] تم إخفاء ${incomes.length} دخل');
+
+      // حذف لقطات الدرج لهذا اليوم
+      final snapshots = await dbHelper.getAllDrawerSnapshots();
+      for (final snapshot in snapshots) {
+        // فحص إذا كانت اللقطة في نفس اليوم
+        if (isSameDay(snapshot.date, selectedDate) && snapshot.id != null) {
+          await dbHelper.deleteDrawerSnapshot(snapshot.id!);
+        }
+      }
+      debugPrint('[RESET_DAY] تم حذف لقطات الدرج لليوم المحدد');
+
+      // إعادة تعيين أرصدة الدرج إذا كان هذا هو اليوم المحدد حالياً
+      if (isSameDay(selectedDate, dateProvider.selectedDate)) {
+        _startOfDayBalance = null;
+        _endOfDayBalance = null;
+        _drawerStatus = DrawerStatus.pendingEnd;
+
+        // إعادة تعيين القيم المالية لليوم فقط (بدون الرصيد النقدي الإجمالي)
+        // ❌ لا نعيد تعيين _totalCashBalance لأنه الرصيد الإجمالي العام
+        _grossProfit = 0.0;
+        _totalExpenses = 0.0;
+        _totalIncome = 0.0;
+        _netProfit = 0.0;
+
+        notifyListeners();
+      }
+
+      debugPrint('[RESET_DAY] تم إكمال إعادة تعيين بيانات اليوم بنجاح');
+    } catch (e) {
+      debugPrint('[RESET_DAY] خطأ في إعادة تعيين البيانات: $e');
+      rethrow;
+    }
+  }
+
+  /// التحقق من تطابق التواريخ (نفس اليوم)
+  bool isSameDay(DateTime date1, DateTime date2) {
+    return date1.year == date2.year &&
+        date1.month == date2.month &&
+        date1.day == date2.day;
   }
 }

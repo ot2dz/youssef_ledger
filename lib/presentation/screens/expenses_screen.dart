@@ -10,6 +10,7 @@ import 'package:youssef_fabric_ledger/presentation/widgets/add_transaction_modal
 import 'package:youssef_fabric_ledger/presentation/widgets/drawer_history_log.dart';
 import 'package:youssef_fabric_ledger/core/enums.dart';
 import 'package:youssef_fabric_ledger/core/formatters/date_formatters.dart';
+import 'package:youssef_fabric_ledger/core/utils/icon_utils.dart';
 
 class ExpensesScreen extends StatefulWidget {
   const ExpensesScreen({Key? key}) : super(key: key);
@@ -195,9 +196,9 @@ class _ExpensesListViewState extends State<ExpensesListView> {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        // فلاتر الوقت
+        // فلاتر الوقت - تصميم محدود المساحة
         Padding(
-          padding: const EdgeInsets.all(16.0),
+          padding: const EdgeInsets.symmetric(horizontal: 0, vertical: 8.0),
           child: _buildTimeFilters(context),
         ),
         // قائمة المصروفات
@@ -222,6 +223,7 @@ class _ExpensesListViewState extends State<ExpensesListView> {
               );
 
               return ListView.builder(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
                 itemCount: groupedExpenses.keys.length,
                 itemBuilder: (context, index) {
                   final dateKey = groupedExpenses.keys.elementAt(index);
@@ -241,62 +243,181 @@ class _ExpensesListViewState extends State<ExpensesListView> {
   /// بناء فلاتر الوقت
   Widget _buildTimeFilters(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
-        color: Theme.of(context).primaryColor,
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        children: [
-          // أزرار الفلاتر الأساسية
-          Row(
-            children: [
-              Expanded(
-                child: _buildFilterButton(
-                  context,
-                  'الكل',
-                  'all',
-                  _selectedTimeFilter == 'all',
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _buildFilterButton(
-                  context,
-                  'اليوم',
-                  'today',
-                  _selectedTimeFilter == 'today',
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _buildFilterButton(
-                  context,
-                  'الأسبوع',
-                  'week',
-                  _selectedTimeFilter == 'week',
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _buildFilterButton(
-                  context,
-                  'الشهر',
-                  'month',
-                  _selectedTimeFilter == 'month',
-                ),
-              ),
-            ],
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade300),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.withOpacity(0.1),
+            spreadRadius: 1,
+            blurRadius: 4,
+            offset: const Offset(0, 2),
           ),
-          const SizedBox(height: 12),
-          // زر التاريخ المخصص
-          SizedBox(
-            width: double.infinity,
-            child: _buildFilterButton(
-              context,
-              _getCustomDateText(),
-              'custom',
-              _selectedTimeFilter == 'custom',
+        ],
+      ),
+      child: Row(
+        children: [
+          Icon(
+            Icons.filter_list_rounded,
+            color: Theme.of(context).primaryColor,
+            size: 20,
+          ),
+          const SizedBox(width: 12),
+          Text(
+            'الفترة الزمنية:',
+            style: TextStyle(
+              color: Colors.grey.shade700,
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: _selectedTimeFilter,
+                isExpanded: true,
+                icon: Icon(
+                  Icons.arrow_drop_down_rounded,
+                  color: Theme.of(context).primaryColor,
+                ),
+                style: TextStyle(
+                  color: Colors.grey.shade800,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+                items: [
+                  DropdownMenuItem(
+                    value: 'all',
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.all_inclusive_rounded,
+                          size: 14,
+                          color: Colors.grey.shade600,
+                        ),
+                        const SizedBox(width: 6),
+                        const Expanded(
+                          child: Text('الكل', style: TextStyle(fontSize: 13)),
+                        ),
+                      ],
+                    ),
+                  ),
+                  DropdownMenuItem(
+                    value: 'today',
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.today_rounded,
+                          size: 14,
+                          color: Colors.green.shade600,
+                        ),
+                        const SizedBox(width: 6),
+                        const Expanded(
+                          child: Text('اليوم', style: TextStyle(fontSize: 13)),
+                        ),
+                      ],
+                    ),
+                  ),
+                  DropdownMenuItem(
+                    value: 'week',
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.view_week_rounded,
+                          size: 14,
+                          color: Colors.blue.shade600,
+                        ),
+                        const SizedBox(width: 6),
+                        const Expanded(
+                          child: Text(
+                            'الأسبوع',
+                            style: TextStyle(fontSize: 13),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  DropdownMenuItem(
+                    value: 'month',
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.calendar_month_rounded,
+                          size: 14,
+                          color: Colors.orange.shade600,
+                        ),
+                        const SizedBox(width: 6),
+                        const Expanded(
+                          child: Text('الشهر', style: TextStyle(fontSize: 13)),
+                        ),
+                      ],
+                    ),
+                  ),
+                  DropdownMenuItem(
+                    value: 'custom',
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.date_range_rounded,
+                          size: 14,
+                          color: Colors.purple.shade600,
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            _getCustomDateText(),
+                            style: const TextStyle(fontSize: 13),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                onChanged: (String? newValue) {
+                  if (newValue != null) {
+                    if (newValue == 'custom') {
+                      _showCustomDatePicker(context);
+                    } else {
+                      setState(() {
+                        _selectedTimeFilter = newValue;
+                      });
+                      _loadExpenses();
+                    }
+                  }
+                },
+              ),
+            ),
+          ),
+          // أيقونة توضيحية للحذف
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.grey.shade100,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.swipe_left_alt_rounded,
+                  size: 14,
+                  color: Colors.grey.shade600,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  'اسحب للحذف',
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: Colors.grey.shade600,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -304,49 +425,17 @@ class _ExpensesListViewState extends State<ExpensesListView> {
     );
   }
 
-  /// بناء زر فلتر واحد
-  Widget _buildFilterButton(
-    BuildContext context,
-    String title,
-    String value,
-    bool isSelected,
-  ) {
-    return GestureDetector(
-      onTap: () {
-        if (value == 'custom') {
-          _showCustomDatePicker(context);
-        } else {
-          setState(() {
-            _selectedTimeFilter = value;
-          });
-          _loadExpenses();
-        }
-      },
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-        decoration: BoxDecoration(
-          color: isSelected ? Colors.white : Colors.white.withOpacity(0.2),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Text(
-          title,
-          textAlign: TextAlign.center,
-          style: TextStyle(
-            color: isSelected ? Theme.of(context).primaryColor : Colors.white,
-            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-            fontSize: 14,
-          ),
-        ),
-      ),
-    );
-  }
-
   /// الحصول على نص التاريخ المخصص
   String _getCustomDateText() {
     if (_customStartDate != null && _customEndDate != null) {
-      return '${DateFormatters.formatShortDate(_customStartDate!)} - ${DateFormatters.formatShortDate(_customEndDate!)}';
+      final startDate = DateFormatters.formatShortDate(_customStartDate!);
+      final endDate = DateFormatters.formatShortDate(_customEndDate!);
+      if (startDate == endDate) {
+        return startDate; // إذا كان نفس التاريخ
+      }
+      return '$startDate - $endDate';
     }
-    return 'تاريخ محدد';
+    return 'تاريخ مخصص';
   }
 
   /// عرض منتقي التاريخ المخصص
@@ -433,17 +522,57 @@ class ExpenseItem extends StatelessWidget {
 
   const ExpenseItem({required this.expense, required this.onUpdate, super.key});
 
-  // دالة الحذف
+  // دالة الحذف مع حوار تأكيد
   Future<void> _delete(BuildContext context) async {
-    await DatabaseHelper.instance.deleteExpense(expense.id!);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('تم حذف المصروف'),
-        backgroundColor: Colors.red,
-      ),
+    // إظهار حوار تأكيد الحذف
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('تأكيد الحذف'),
+          content: Text(
+            'هل أنت متأكد من حذف هذا المصروف؟\nالمبلغ: ${expense.amount} د.ج${expense.note != null ? '\nالملاحظة: ${expense.note}' : ''}',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('إلغاء'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('حذف'),
+            ),
+          ],
+        );
+      },
     );
-    // استدعاء دالة التحديث لإعادة تحميل القائمة
-    onUpdate();
+
+    // إذا تم تأكيد الحذف
+    if (shouldDelete == true) {
+      try {
+        await DatabaseHelper.instance.deleteExpense(expense.id!);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'تم حذف المصروف${expense.note != null ? ': ${expense.note}' : ' بنجاح'}',
+            ),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        // استدعاء دالة التحديث لإعادة تحميل القائمة
+        onUpdate();
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('خطأ في حذف المصروف: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    }
   }
 
   // --- ✅ تفعيل دالة التعديل ---
@@ -469,21 +598,22 @@ class ExpenseItem extends StatelessWidget {
       key: ValueKey(expense.id),
       // --- الأزرار التي تظهر على اليسار عند السحب ---
       startActionPane: ActionPane(
-        motion: const DrawerMotion(),
+        motion: const BehindMotion(),
+        extentRatio: 0.4, // تحسين عرض الأزرار
         children: [
           SlidableAction(
             onPressed: (ctx) => _delete(context),
-            backgroundColor: Colors.red,
+            backgroundColor: const Color(0xFFEF4444),
             foregroundColor: Colors.white,
-            icon: Icons.delete,
+            icon: Icons.delete_forever,
             label: 'حذف',
             borderRadius: BorderRadius.circular(12),
           ),
           SlidableAction(
             onPressed: _edit,
-            backgroundColor: Colors.blue,
+            backgroundColor: const Color(0xFF3B82F6),
             foregroundColor: Colors.white,
-            icon: Icons.edit,
+            icon: Icons.edit_rounded,
             label: 'تعديل',
             borderRadius: BorderRadius.circular(12),
           ),
@@ -494,10 +624,7 @@ class ExpenseItem extends StatelessWidget {
         builder: (context, snapshot) {
           final categoryName = snapshot.hasData ? snapshot.data!.name : '...';
           final categoryIcon = snapshot.hasData
-              ? IconData(
-                  snapshot.data!.iconCodePoint,
-                  fontFamily: 'MaterialIcons',
-                )
+              ? getIconFromCodePoint(snapshot.data!.iconCodePoint)
               : Icons.label_outline;
 
           final sourceMap = {

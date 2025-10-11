@@ -9,6 +9,7 @@ class Income {
   final TransactionSource source;
   final String? note;
   final DateTime createdAt;
+  final bool isHidden;
 
   Income({
     this.id,
@@ -17,6 +18,7 @@ class Income {
     required this.source,
     this.note,
     required this.createdAt,
+    this.isHidden = false,
   });
 
   Map<String, dynamic> toMap() {
@@ -27,6 +29,7 @@ class Income {
       'source': source.name,
       'note': note,
       'createdAt': createdAt.toIso8601String(),
+      'is_hidden': isHidden ? 1 : 0,
     };
   }
 
@@ -38,6 +41,7 @@ class Income {
       source: TransactionSource.values.byName(map['source'] as String),
       note: map['note'] as String?,
       createdAt: DateTime.parse(map['createdAt'] as String),
+      isHidden: (map['is_hidden'] as int? ?? 0) == 1,
     );
   }
 
@@ -48,6 +52,7 @@ class Income {
     TransactionSource? source,
     String? note,
     DateTime? createdAt,
+    bool? isHidden,
   }) {
     return Income(
       id: id ?? this.id,
@@ -56,6 +61,7 @@ class Income {
       source: source ?? this.source,
       note: note ?? this.note,
       createdAt: createdAt ?? this.createdAt,
+      isHidden: isHidden ?? this.isHidden,
     );
   }
 }

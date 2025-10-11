@@ -10,7 +10,10 @@ import 'package:youssef_fabric_ledger/features/reports/presentation/reports_scre
 import 'package:youssef_fabric_ledger/features/reports/logic/reports_provider.dart';
 
 class MainLayout extends StatefulWidget {
-  const MainLayout({super.key});
+  final VoidCallback? onLogout;
+
+  const MainLayout({super.key, this.onLogout});
+
   @override
   State<MainLayout> createState() => _MainLayoutState();
 }
@@ -30,7 +33,49 @@ class _MainLayoutState extends State<MainLayout> {
     setState(() {
       _currentIndex = index;
     });
-    _pageController.jumpToPage(index);
+    _pageController.animateToPage(
+      index,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.ease,
+    );
+  }
+
+  /// عرض مربع حوار تأكيد تسجيل الخروج
+  Future<void> _showLogoutConfirmation() async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.logout, color: Colors.red),
+              SizedBox(width: 8),
+              Text('تسجيل الخروج'),
+            ],
+          ),
+          content: const Text('هل أنت متأكد من رغبتك في تسجيل الخروج؟'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('إلغاء'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('تسجيل الخروج'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (result == true && widget.onLogout != null) {
+      widget.onLogout!();
+    }
   }
 
   /// الدالة التي تفتح النافذة المنبثقة من الأسفل لإضافة مصروف جديد
@@ -58,6 +103,38 @@ class _MainLayoutState extends State<MainLayout> {
     return Directionality(
       textDirection: TextDirection.rtl,
       child: Scaffold(
+        appBar: AppBar(
+          title: const Text(
+            'دفتر التاجر',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+          centerTitle: true,
+          backgroundColor: const Color(0xFF6366F1),
+          foregroundColor: Colors.white,
+          elevation: 0,
+          actions: [
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.more_vert),
+              onSelected: (value) async {
+                if (value == 'logout') {
+                  await _showLogoutConfirmation();
+                }
+              },
+              itemBuilder: (BuildContext context) => [
+                const PopupMenuItem(
+                  value: 'logout',
+                  child: Row(
+                    children: [
+                      Icon(Icons.logout, color: Colors.red),
+                      SizedBox(width: 8),
+                      Text('تسجيل الخروج'),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
         body: PageView(
           controller: _pageController,
           onPageChanged: (index) {

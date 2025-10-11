@@ -43,7 +43,7 @@ class _HomeScreenState extends State<HomeScreen> {
             slivers: [
               SliverAppBar(
                 title: const Text(
-                  'دفتر أقمشة يوسف',
+                  'دفتر التاجر',
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22),
                 ),
                 centerTitle: true,
@@ -74,11 +74,13 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ],
                 bottom: PreferredSize(
-                  preferredSize: const Size.fromHeight(60.0),
+                  preferredSize: const Size.fromHeight(
+                    72.0,
+                  ), // زيادة الارتفاع لتجنب الفيض
                   child: Container(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 16.0,
-                      vertical: 8.0,
+                      vertical: 12.0, // تقليل padding قليلاً لتوفير مساحة
                     ),
                     decoration: const BoxDecoration(
                       color: Color(0xFF6366F1),
@@ -264,27 +266,37 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Row(
-              children: [
-                Icon(icon, size: 40, color: color),
-                const SizedBox(width: 16),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(title, style: Theme.of(context).textTheme.titleLarge),
-                    Directionality(
-                      textDirection: ui.TextDirection.rtl,
-                      child: Text(
-                        value,
-                        style: const TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
+            Expanded(
+              flex: 3,
+              child: Row(
+                children: [
+                  Icon(icon, size: 40, color: color),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          title,
+                          style: Theme.of(context).textTheme.titleLarge,
+                          overflow: TextOverflow.ellipsis,
                         ),
-                      ),
+                        Directionality(
+                          textDirection: ui.TextDirection.rtl,
+                          child: Text(
+                            value,
+                            style: const TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-              ],
+                  ),
+                ],
+              ),
             ),
             Row(
               children: [
@@ -449,29 +461,60 @@ class _HomeScreenState extends State<HomeScreen> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceAround,
                   children: [
-                    _buildStatusColumn(
-                      'الرصيد الافتتاحي',
-                      currencyFormat.format(status['openingBalance'] ?? 0.0),
-                      Icons.login,
-                      Colors.blueGrey,
+                    Expanded(
+                      child: _buildStatusColumn(
+                        'الرصيد الافتتاحي',
+                        currencyFormat.format(status['openingBalance'] ?? 0.0),
+                        Icons.login,
+                        Colors.blueGrey,
+                      ),
                     ),
-                    _buildStatusColumn(
-                      'الرصيد الختامي',
-                      currencyFormat.format(status['closingBalance'] ?? 0.0),
-                      Icons.logout,
-                      Colors.blueGrey,
+                    Expanded(
+                      child: _buildStatusColumn(
+                        'الرصيد الختامي',
+                        currencyFormat.format(status['closingBalance'] ?? 0.0),
+                        Icons.logout,
+                        Colors.blueGrey,
+                      ),
                     ),
-                    _buildStatusColumn(
-                      'الفرق',
-                      currencyFormat.format(status['difference'] ?? 0.0),
-                      (status['difference'] ?? 0.0) >= 0
-                          ? Icons.arrow_upward
-                          : Icons.arrow_downward,
-                      (status['difference'] ?? 0.0) >= 0
-                          ? Colors.green
-                          : Colors.red,
+                    Expanded(
+                      child: _buildStatusColumn(
+                        'الفرق',
+                        currencyFormat.format(status['difference'] ?? 0.0),
+                        (status['difference'] ?? 0.0) >= 0
+                            ? Icons.arrow_upward
+                            : Icons.arrow_downward,
+                        (status['difference'] ?? 0.0) >= 0
+                            ? Colors.green
+                            : Colors.red,
+                      ),
                     ),
                   ],
+                ),
+                // زر إغلاق اليوم
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: () => _showCloseDayDialog(context),
+                    icon: const Icon(Icons.event_available_rounded),
+                    label: const Text(
+                      'إغلاق اليوم وإعادة التعيين',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.orange.shade600,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 3,
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -493,7 +536,10 @@ class _HomeScreenState extends State<HomeScreen> {
         const SizedBox(height: 8),
         Text(
           title,
-          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+          textAlign: TextAlign.center,
+          overflow: TextOverflow.ellipsis,
+          maxLines: 2,
         ),
         const SizedBox(height: 4),
         Directionality(
@@ -501,14 +547,224 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Text(
             value,
             style: TextStyle(
-              fontSize: 16,
+              fontSize: 14,
               fontWeight: FontWeight.bold,
               color: color,
             ),
+            textAlign: TextAlign.center,
+            overflow: TextOverflow.ellipsis,
+            maxLines: 1,
           ),
         ),
       ],
     );
+  }
+
+  void _showCloseDayDialog(BuildContext context) {
+    final TextEditingController dateController = TextEditingController();
+    DateTime selectedDate = DateTime.now();
+    dateController.text = DateFormatters.formatShortDate(selectedDate);
+
+    showDialog(
+      context: context,
+      builder: (context) => Directionality(
+        textDirection: ui.TextDirection.rtl,
+        child: AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: Row(
+            children: [
+              Icon(
+                Icons.warning_rounded,
+                color: Colors.orange.shade600,
+                size: 28,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'إغلاق اليوم وإعادة التعيين',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF1F2937),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.orange.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.orange.shade300),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '⚠️ تحذير:',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.orange.shade800,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'سيتم إعادة تعيين جميع بيانات اليوم المحدد:\n• رصيد بداية ونهاية اليوم\n• جميع المصاريف والمداخيل',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Colors.orange.shade700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'اختر التاريخ:',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 8),
+              GestureDetector(
+                onTap: () async {
+                  final DateTime? picked = await showDatePicker(
+                    context: context,
+                    initialDate: selectedDate,
+                    firstDate: DateTime(2020),
+                    lastDate: DateTime.now().add(const Duration(days: 30)),
+                    locale: const Locale('ar'),
+                  );
+                  if (picked != null && picked != selectedDate) {
+                    selectedDate = picked;
+                    dateController.text = DateFormatters.formatShortDate(
+                      selectedDate,
+                    );
+                  }
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 16,
+                  ),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.grey.shade300),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.calendar_today_rounded,
+                        color: const Color(0xFF6366F1),
+                        size: 20,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          dateController.text,
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              style: TextButton.styleFrom(
+                foregroundColor: const Color(0xFF6B7280),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 12,
+                ),
+              ),
+              child: const Text(
+                'إلغاء',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                _resetDayData(context, selectedDate);
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.orange.shade600,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 12,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+              child: const Text(
+                'إغلاق وإعادة تعيين',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _resetDayData(BuildContext context, DateTime selectedDate) async {
+    try {
+      // عرض مؤشر التحميل
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const Center(child: CircularProgressIndicator()),
+      );
+
+      final financeProvider = Provider.of<FinanceProvider>(
+        context,
+        listen: false,
+      );
+
+      // إعادة تعيين بيانات اليوم
+      await financeProvider.resetDayData(selectedDate);
+
+      // إغلاق مؤشر التحميل
+      Navigator.of(context).pop();
+
+      // عرض رسالة نجاح
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'تم إغلاق يوم ${DateFormatters.formatShortDate(selectedDate)} وإعادة تعيين بياناته بنجاح',
+          ),
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+
+      // إعادة تحميل البيانات
+      financeProvider.fetchFinancialDataForSelectedDate();
+    } catch (e) {
+      // إغلاق مؤشر التحميل في حالة الخطأ
+      Navigator.of(context).pop();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('خطأ في إعادة تعيين البيانات: $e'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 5),
+        ),
+      );
+    }
   }
 
   void _navigateToCashBalanceLog(BuildContext context) {

@@ -362,4 +362,126 @@ class ReportsRepository {
       ORDER BY balance DESC
     ''');
   }
+
+  /// جلب البيانات اليومية لتقرير PDF
+  Future<List<DailyProfitData>> getDailyProfitDataForPdf(
+    DateTime fromDate,
+    DateTime toDate,
+  ) async {
+    final db = await _databaseHelper.database;
+    final data = <DailyProfitData>[];
+
+    // جلب البيانات لكل يوم في النطاق المحدد
+    DateTime currentDate = DateTime(
+      fromDate.year,
+      fromDate.month,
+      fromDate.day,
+    );
+    final endDate = DateTime(toDate.year, toDate.month, toDate.day);
+
+    while (!currentDate.isAfter(endDate)) {
+      final nextDay = currentDate.add(const Duration(days: 1));
+      final dateStr = currentDate.toIso8601String().split('T')[0];
+
+      // حساب المداخيل اليدوية لهذا اليوم (بما في ذلك البيانات المخفاة)
+      final manualIncomeResult = await db.rawQuery(
+        '''
+        SELECT COALESCE(SUM(amount), 0) as total
+        FROM income
+        WHERE date >= ? AND date < ?
+        ''',
+        [currentDate.toIso8601String(), nextDay.toIso8601String()],
+      );
+
+      // حساب أرباح الدرج لهذا اليوم
+      final drawerTurnoverResult = await db.rawQuery(
+        '''
+        SELECT COALESCE(
+          (end_snapshot.cashAmount - COALESCE(
+            -- Try to find start snapshot for same date
+            (SELECT cashAmount FROM drawer_snapshots 
+             WHERE DATE(date) = ? AND type = 'start' LIMIT 1),
+            -- If not found, use last start balance before last closure logic
+            (SELECT cashAmount FROM drawer_snapshots start_before
+             WHERE type = 'start' 
+             AND DATE(start_before.date) <= ?
+             AND DATE(start_before.date) <= (
+               SELECT COALESCE(MAX(DATE(last_end.date)), '9999-12-31')
+               FROM drawer_snapshots last_end
+               WHERE type = 'end' AND DATE(last_end.date) < ?
+             )
+             ORDER BY DATE(start_before.date) DESC LIMIT 1),
+            0
+          )) + COALESCE(drawer_outflows.total, 0), 0) as turnover
+        FROM drawer_snapshots end_snapshot
+        LEFT JOIN (
+          SELECT SUM(amount) as total
+          FROM expenses
+          WHERE source = 'drawer' AND DATE(date) = ?
+        ) drawer_outflows ON 1=1
+        WHERE end_snapshot.type = 'end' AND DATE(end_snapshot.date) = ?
+        ''',
+        [dateStr, dateStr, dateStr, dateStr, dateStr],
+      );
+
+      // حساب إجمالي المصاريف لهذا اليوم (بما في ذلك البيانات المخفاة)
+      final expensesResult = await db.rawQuery(
+        '''
+        SELECT COALESCE(SUM(amount), 0) as total
+        FROM expenses
+        WHERE date >= ? AND date < ?
+        ''',
+        [currentDate.toIso8601String(), nextDay.toIso8601String()],
+      );
+
+      final manualIncome =
+          (manualIncomeResult.first['total'] as num?)?.toDouble() ?? 0.0;
+      final drawerTurnover = drawerTurnoverResult.isNotEmpty
+          ? (drawerTurnoverResult.first['turnover'] as num?)?.toDouble() ?? 0.0
+          : 0.0;
+      final totalIncome =
+          manualIncome +
+          drawerTurnover; // إجمالي المداخيل = المداخيل اليدوية + أرباح الدرج
+      final totalExpenses =
+          (expensesResult.first['total'] as num?)?.toDouble() ?? 0.0;
+      final grossProfit =
+          totalIncome * 0.20; // الربح الكلي = 20% من إجمالي المداخيل
+      final netProfit =
+          grossProfit - totalExpenses; // الربح الصافي = الربح الكلي - المصاريف
+
+      // إضافة البيانات فقط إذا كان هناك نشاط في هذا اليوم
+      if (totalIncome > 0 || totalExpenses > 0) {
+        data.add(
+          DailyProfitData(
+            date: currentDate,
+            totalIncome: totalIncome,
+            grossProfit: grossProfit,
+            totalExpenses: totalExpenses,
+            netProfit: netProfit,
+          ),
+        );
+      }
+
+      currentDate = nextDay;
+    }
+
+    return data;
+  }
+}
+
+/// نموذج البيانات اليومية للـ PDF
+class DailyProfitData {
+  final DateTime date;
+  final double totalIncome;
+  final double grossProfit;
+  final double totalExpenses;
+  final double netProfit;
+
+  const DailyProfitData({
+    required this.date,
+    required this.totalIncome,
+    required this.grossProfit,
+    required this.totalExpenses,
+    required this.netProfit,
+  });
 }

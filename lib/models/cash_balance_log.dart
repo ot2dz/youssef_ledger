@@ -46,6 +46,8 @@ class CashBalanceLog {
         return 'دفع دين';
       case CashBalanceChangeType.debtCollection:
         return 'استلام من مدين';
+      case CashBalanceChangeType.cashIncome:
+        return 'دخل نقدي';
     }
   }
 
@@ -145,7 +147,8 @@ enum CashBalanceChangeType {
   dayClosing('day_closing'),
   expenseDeletion('expense_deletion'),
   debtPayment('debt_payment'), // دفع دين نقداً
-  debtCollection('debt_collection'); // استلام من مدين نقداً
+  debtCollection('debt_collection'), // استلام من مدين نقداً
+  cashIncome('cash_income'); // دخل نقدي
 
   const CashBalanceChangeType(this.value);
 
@@ -166,6 +169,8 @@ enum CashBalanceChangeType {
         return CashBalanceChangeType.debtPayment;
       case 'debt_collection':
         return CashBalanceChangeType.debtCollection;
+      case 'cash_income':
+        return CashBalanceChangeType.cashIncome;
       default:
         throw ArgumentError('Unknown cash balance change type: $value');
     }

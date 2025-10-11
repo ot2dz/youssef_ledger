@@ -208,10 +208,6 @@ class _PartiesListState extends State<PartiesList>
               // Search and Filter Bar - Using Flexible to allow shrinking
               Flexible(flex: 0, child: _buildSearchAndFilterBar()),
 
-              // Results Count Bar - Using Flexible to allow shrinking
-              if (partiesWithStats.isNotEmpty)
-                Flexible(flex: 0, child: _buildResultsCountBar()),
-
               // Parties List - Takes remaining space
               Expanded(child: _buildPartiesList()),
             ],
@@ -224,112 +220,203 @@ class _PartiesListState extends State<PartiesList>
   /// Build search and filter bar
   Widget _buildSearchAndFilterBar() {
     return Container(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade300),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.withOpacity(0.1),
+            spreadRadius: 1,
+            blurRadius: 4,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Search Field
-          TextField(
-            controller: _searchController,
-            onChanged: _onSearchChanged,
-            decoration: InputDecoration(
-              hintText:
-                  'البحث عن ${widget.role == PartyRole.vendor ? 'مورد' : 'شخص'}...',
-              prefixIcon: const Icon(Icons.search),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
+          // صف واحد للبحث والفلاتر
+          Row(
+            children: [
+              // أيقونة البحث
+              Icon(
+                Icons.search_rounded,
+                color: Theme.of(context).primaryColor,
+                size: 20,
               ),
-              filled: true,
-              fillColor: Theme.of(context).cardColor,
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 12,
-                vertical: 8,
+              const SizedBox(width: 8),
+              // حقل البحث المدمج
+              Expanded(
+                flex: 2,
+                child: TextField(
+                  controller: _searchController,
+                  onChanged: _onSearchChanged,
+                  decoration: InputDecoration(
+                    hintText: 'بحث...',
+                    border: InputBorder.none,
+                    contentPadding: EdgeInsets.zero,
+                    isDense: true,
+                    hintStyle: TextStyle(
+                      fontSize: 13,
+                      color: Colors.grey.shade500,
+                    ),
+                  ),
+                  style: const TextStyle(fontSize: 13),
+                  textDirection: TextDirection.rtl,
+                ),
               ),
-              isDense: true,
-            ),
-            textDirection: TextDirection.rtl,
+              const SizedBox(width: 8),
+              // قائمة منسدلة للفلترة
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<PartyFilterType>(
+                    value: _filterType,
+                    isDense: true,
+                    icon: Icon(
+                      Icons.filter_list_rounded,
+                      size: 16,
+                      color: Theme.of(context).primaryColor,
+                    ),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.grey.shade700,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    items: [
+                      DropdownMenuItem(
+                        value: PartyFilterType.all,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.view_list_rounded,
+                              size: 14,
+                              color: Colors.grey.shade600,
+                            ),
+                            const SizedBox(width: 4),
+                            const Text('الكل'),
+                          ],
+                        ),
+                      ),
+                      DropdownMenuItem(
+                        value: PartyFilterType.withBalance,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.account_balance_wallet_rounded,
+                              size: 14,
+                              color: Colors.green.shade600,
+                            ),
+                            const SizedBox(width: 4),
+                            const Text('لديهم رصيد'),
+                          ],
+                        ),
+                      ),
+                      DropdownMenuItem(
+                        value: PartyFilterType.withoutBalance,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.money_off_rounded,
+                              size: 14,
+                              color: Colors.grey.shade600,
+                            ),
+                            const SizedBox(width: 4),
+                            const Text('بدون رصيد'),
+                          ],
+                        ),
+                      ),
+                      DropdownMenuItem(
+                        value: PartyFilterType.recentActivity,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.schedule_rounded,
+                              size: 14,
+                              color: Colors.blue.shade600,
+                            ),
+                            const SizedBox(width: 4),
+                            const Text('نشاط حديث'),
+                          ],
+                        ),
+                      ),
+                    ],
+                    onChanged: (PartyFilterType? value) {
+                      if (value != null) {
+                        _onFilterChanged(value);
+                      }
+                    },
+                  ),
+                ),
+              ),
+              // زر مسح الفلاتر (إذا كان هناك فلتر مطبق)
+              if (_searchQuery.isNotEmpty || _filterType != PartyFilterType.all)
+                Padding(
+                  padding: const EdgeInsets.only(right: 4),
+                  child: IconButton(
+                    onPressed: () {
+                      setState(() {
+                        _searchController.clear();
+                        _searchQuery = '';
+                        _filterType = PartyFilterType.all;
+                        _filterAndSearchParties();
+                      });
+                    },
+                    icon: Icon(
+                      Icons.clear_rounded,
+                      size: 16,
+                      color: Colors.grey.shade600,
+                    ),
+                    constraints: const BoxConstraints(),
+                    padding: const EdgeInsets.all(4),
+                  ),
+                ),
+            ],
           ),
-
-          const SizedBox(height: 6),
-
-          // Filter Chips
-          SizedBox(
-            height: 36,
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  _buildFilterChip('الكل', PartyFilterType.all),
-                  const SizedBox(width: 8),
-                  _buildFilterChip('لديهم رصيد', PartyFilterType.withBalance),
-                  const SizedBox(width: 8),
-                  _buildFilterChip('بدون رصيد', PartyFilterType.withoutBalance),
-                  const SizedBox(width: 8),
-                  _buildFilterChip('نشاط حديث', PartyFilterType.recentActivity),
-                ],
-              ),
+          // شريط النتائج (إذا لزم الأمر)
+          if (_shouldShowResultsCount()) ...[
+            const SizedBox(height: 6),
+            Container(height: 1, color: Colors.grey.shade200),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Icon(
+                  Icons.info_outline_rounded,
+                  size: 12,
+                  color: Colors.grey.shade500,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  'عرض ${filteredParties.length} من أصل ${partiesWithStats.length}',
+                  style: TextStyle(fontSize: 10, color: Colors.grey.shade500),
+                ),
+              ],
             ),
-          ),
+          ],
         ],
       ),
     );
   }
 
-  /// Build results count bar
-  Widget _buildResultsCountBar() {
+  /// تحديد ما إذا كان يجب عرض عدد النتائج
+  bool _shouldShowResultsCount() {
     final totalCount = partiesWithStats.length;
     final filteredCount = filteredParties.length;
 
-    if (totalCount == filteredCount &&
+    return !(totalCount == filteredCount &&
         _searchQuery.isEmpty &&
-        _filterType == PartyFilterType.all) {
-      return const SizedBox.shrink();
-    }
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      child: Row(
-        children: [
-          Icon(Icons.info_outline, size: 14, color: Colors.grey.shade600),
-          const SizedBox(width: 6),
-          Text(
-            'عرض $filteredCount من أصل $totalCount',
-            style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
-          ),
-          const Spacer(),
-          if (_searchQuery.isNotEmpty || _filterType != PartyFilterType.all)
-            TextButton.icon(
-              onPressed: () {
-                setState(() {
-                  _searchController.clear();
-                  _searchQuery = '';
-                  _filterType = PartyFilterType.all;
-                  _filterAndSearchParties();
-                });
-              },
-              icon: const Icon(Icons.clear_all, size: 14),
-              label: const Text('مسح'),
-              style: TextButton.styleFrom(
-                textStyle: const TextStyle(fontSize: 11),
-                minimumSize: const Size(0, 24),
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  /// Build filter chip
-  Widget _buildFilterChip(String label, PartyFilterType filterType) {
-    final isSelected = _filterType == filterType;
-    return FilterChip(
-      label: Text(label),
-      selected: isSelected,
-      onSelected: (_) => _onFilterChanged(filterType),
-      selectedColor: Theme.of(context).primaryColor.withOpacity(0.2),
-      checkmarkColor: Theme.of(context).primaryColor,
-    );
+        _filterType == PartyFilterType.all);
   }
 
   /// Build the main parties list

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import '../../logic/reports_provider.dart';
+import '../../data/models.dart';
 
 class SummaryCards extends StatelessWidget {
   const SummaryCards({super.key});
@@ -11,6 +12,7 @@ class SummaryCards extends StatelessWidget {
     return Consumer<ReportsProvider>(
       builder: (context, provider, _) {
         final data = provider.reportData;
+        final reportType = provider.filterState.reportType;
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -23,66 +25,95 @@ class SummaryCards extends StatelessWidget {
             ),
             const SizedBox(height: 16),
 
-            // Main financial cards
-            Row(
-              children: [
-                Expanded(
-                  child: _SummaryCard(
-                    title: 'إجمالي الدخل',
-                    amount: data.incomeTotal,
-                    icon: Icons.trending_up,
-                    color: Colors.green,
-                  ),
+            // Show different cards based on report type
+            if (reportType == ReportType.all ||
+                reportType == ReportType.income) ...[
+              // Income and expenses cards
+              if (reportType == ReportType.all) ...[
+                Row(
+                  children: [
+                    Expanded(
+                      child: _SummaryCard(
+                        title: 'إجمالي الدخل',
+                        amount: data.incomeTotal,
+                        icon: Icons.trending_up,
+                        color: Colors.green,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _SummaryCard(
+                        title: 'إجمالي المصروفات',
+                        amount: data.expensesTotal,
+                        icon: Icons.trending_down,
+                        color: Colors.red,
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _SummaryCard(
-                    title: 'إجمالي المصروفات',
-                    amount: data.expensesTotal,
-                    icon: Icons.trending_down,
-                    color: Colors.red,
-                  ),
+                const SizedBox(height: 12),
+              ] else ...[
+                // Income only
+                _SummaryCard(
+                  title: 'إجمالي الدخل',
+                  amount: data.incomeTotal,
+                  icon: Icons.trending_up,
+                  color: Colors.green,
+                  isWide: true,
                 ),
+                const SizedBox(height: 12),
               ],
-            ),
-            const SizedBox(height: 12),
+            ],
 
-            // Net profit card
-            _SummaryCard(
-              title: 'صافي الربح',
-              subtitle:
-                  'بعد خصم المصروفات وهامش الربح ${(provider.filterState.profitMargin * 100).toStringAsFixed(0)}%',
-              amount: data.netProfitTotal,
-              icon: data.netProfitTotal >= 0
-                  ? Icons.account_balance_wallet
-                  : Icons.warning,
-              color: data.netProfitTotal >= 0 ? Colors.blue : Colors.orange,
-              isWide: true,
-            ),
-            const SizedBox(height: 12),
+            if (reportType == ReportType.expenses) ...[
+              // Expenses only
+              _SummaryCard(
+                title: 'إجمالي المصروفات',
+                amount: data.expensesTotal,
+                icon: Icons.trending_down,
+                color: Colors.red,
+                isWide: true,
+              ),
+              const SizedBox(height: 12),
+            ],
 
-            // Debt summary cards
-            Row(
-              children: [
-                Expanded(
-                  child: _SummaryCard(
-                    title: 'مستحق لك',
-                    amount: data.receivableTotal,
-                    icon: Icons.call_received,
-                    color: Colors.teal,
+            // Net profit card (only for all types)
+            if (reportType == ReportType.all) ...[
+              _SummaryCard(
+                title: 'صافي الربح',
+                subtitle: 'بعد خصم المصروفات',
+                amount: data.netProfitTotal,
+                icon: data.netProfitTotal >= 0
+                    ? Icons.account_balance_wallet
+                    : Icons.warning,
+                color: data.netProfitTotal >= 0 ? Colors.blue : Colors.orange,
+                isWide: true,
+              ),
+              const SizedBox(height: 12),
+
+              // Debt summary cards
+              Row(
+                children: [
+                  Expanded(
+                    child: _SummaryCard(
+                      title: 'مستحق لك',
+                      amount: data.receivableTotal,
+                      icon: Icons.call_received,
+                      color: Colors.teal,
+                    ),
                   ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _SummaryCard(
-                    title: 'مستحق عليك',
-                    amount: data.payableTotal,
-                    icon: Icons.call_made,
-                    color: Colors.amber,
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _SummaryCard(
+                      title: 'مستحق عليك',
+                      amount: data.payableTotal,
+                      icon: Icons.call_made,
+                      color: Colors.amber,
+                    ),
                   ),
-                ),
-              ],
-            ),
+                ],
+              ),
+            ],
           ],
         );
       },

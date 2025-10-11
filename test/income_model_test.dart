@@ -1,17 +1,22 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:youssef_fabric_ledger/data/models/income.dart';
+import 'package:youssef_fabric_ledger/core/enums.dart';
 
 void main() {
   group('Income Model Tests', () {
     test('Income model should handle all valid source types', () {
-      final validSources = ['cash', 'drawer', 'bank'];
+      final validSources = [
+        TransactionSource.cash,
+        TransactionSource.drawer,
+        TransactionSource.bank,
+      ];
 
       for (final source in validSources) {
         final income = Income(
           date: DateTime.now(),
           amount: 100.0,
           source: source,
-          note: 'Test income for $source',
+          note: 'Test income for ${source.name}',
           createdAt: DateTime.now(),
         );
 
@@ -25,7 +30,7 @@ void main() {
         id: 1,
         date: DateTime.now(),
         amount: 150.0,
-        source: 'cash',
+        source: TransactionSource.cash,
         note: 'Cash payment',
         createdAt: DateTime.now(),
       );

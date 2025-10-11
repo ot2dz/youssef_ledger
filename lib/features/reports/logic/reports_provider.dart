@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import '../data/models.dart';
 import '../data/repository.dart';
 import '../../../data/local/database_helper.dart';
+import '../../../services/pdf_service.dart';
 
 /// Provider for managing reports state and data loading
 class ReportsProvider extends ChangeNotifier {
@@ -44,22 +45,32 @@ class ReportsProvider extends ChangeNotifier {
     await loadReportData();
   }
 
+  /// Update report type and reload data
+  Future<void> updateReportType(ReportType reportType) async {
+    _filterState = _filterState.copyWith(reportType: reportType);
+    notifyListeners();
+    await loadReportData();
+  }
+
   /// Apply filter preset (week/month/year)
   Future<void> applyPreset(FilterPreset preset) async {
     switch (preset) {
       case FilterPreset.week:
         _filterState = ReportFilterState.defaultWeek().copyWith(
           profitMargin: _filterState.profitMargin,
+          reportType: _filterState.reportType,
         );
         break;
       case FilterPreset.month:
         _filterState = ReportFilterState.month().copyWith(
           profitMargin: _filterState.profitMargin,
+          reportType: _filterState.reportType,
         );
         break;
       case FilterPreset.year:
         _filterState = ReportFilterState.year().copyWith(
           profitMargin: _filterState.profitMargin,
+          reportType: _filterState.reportType,
         );
         break;
       case FilterPreset.custom:
@@ -92,5 +103,24 @@ class ReportsProvider extends ChangeNotifier {
   /// Refresh all data
   Future<void> refresh() async {
     await loadReportData();
+  }
+
+  /// إنشاء تقرير PDF للأرباح
+  Future<void> generatePdfReport() async {
+    try {
+      final data = await _repository.getDailyProfitDataForPdf(
+        _filterState.fromDate,
+        _filterState.toDate,
+      );
+
+      await PdfService.generateProfitReport(
+        data: data,
+        fromDate: _filterState.fromDate,
+        toDate: _filterState.toDate,
+      );
+    } catch (e) {
+      debugPrint('خطأ في إنشاء تقرير PDF: $e');
+      rethrow;
+    }
   }
 }

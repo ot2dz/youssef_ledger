@@ -3,6 +3,8 @@
 
 enum FilterPreset { week, month, year, custom }
 
+enum ReportType { all, income, expenses }
+
 extension FilterPresetExtension on FilterPreset {
   String get displayName {
     switch (this) {
@@ -18,18 +20,33 @@ extension FilterPresetExtension on FilterPreset {
   }
 }
 
+extension ReportTypeExtension on ReportType {
+  String get displayName {
+    switch (this) {
+      case ReportType.all:
+        return 'جميع البيانات';
+      case ReportType.income:
+        return 'المداخيل فقط';
+      case ReportType.expenses:
+        return 'المصاريف فقط';
+    }
+  }
+}
+
 /// State for date range filtering and profit margin
 class ReportFilterState {
   final DateTime fromDate;
   final DateTime toDate;
   final FilterPreset preset;
   final double profitMargin; // 0.0 - 1.0
+  final ReportType reportType;
 
   const ReportFilterState({
     required this.fromDate,
     required this.toDate,
     required this.preset,
     this.profitMargin = 0.2, // Default 20%
+    this.reportType = ReportType.all,
   });
 
   factory ReportFilterState.defaultWeek() {
@@ -67,12 +84,14 @@ class ReportFilterState {
     DateTime? toDate,
     FilterPreset? preset,
     double? profitMargin,
+    ReportType? reportType,
   }) {
     return ReportFilterState(
       fromDate: fromDate ?? this.fromDate,
       toDate: toDate ?? this.toDate,
       preset: preset ?? this.preset,
       profitMargin: profitMargin ?? this.profitMargin,
+      reportType: reportType ?? this.reportType,
     );
   }
 }
