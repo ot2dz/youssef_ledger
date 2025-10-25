@@ -14,6 +14,7 @@ import 'package:youssef_fabric_ledger/logic/providers/finance_provider.dart';
 import 'package:youssef_fabric_ledger/core/enums.dart';
 import 'package:youssef_fabric_ledger/core/formatters/date_formatters.dart';
 import 'package:youssef_fabric_ledger/core/utils/icon_utils.dart';
+import 'package:youssef_fabric_ledger/services/data_cache_service.dart';
 
 class ExpensesScreen extends StatefulWidget {
   const ExpensesScreen({Key? key}) : super(key: key);
@@ -133,12 +134,8 @@ class _ExpensesListViewState extends State<ExpensesListView> {
     _loadExpenses();
   }
 
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    // إعادة تحميل البيانات عند العودة للشاشة
-    _loadExpenses();
-  }
+  // OPTIMIZATION: Removed didChangeDependencies to prevent unnecessary reloads
+  // DbBus subscription in parent widget handles auto-refresh
 
   /// تحميل المصروفات حسب الفلتر المحدد
   void _loadExpenses() {
@@ -685,11 +682,8 @@ class _IncomeListViewState extends State<IncomeListView> {
     _loadIncome();
   }
 
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _loadIncome();
-  }
+  // OPTIMIZATION: Removed didChangeDependencies to prevent unnecessary reloads
+  // DbBus subscription in parent widget handles auto-refresh
 
   void _loadIncome() {
     setState(() {
