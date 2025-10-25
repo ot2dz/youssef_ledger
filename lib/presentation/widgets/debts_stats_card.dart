@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../../data/local/database_helper.dart';
+import '../../data/local/db_bus.dart';
 
 class DebtsStatsCard extends StatefulWidget {
   const DebtsStatsCard({super.key});
@@ -13,11 +15,25 @@ class _DebtsStatsCardState extends State<DebtsStatsCard> {
   double _receivableTotal = 0.0;
   double _payableTotal = 0.0;
   bool _isLoading = true;
+  late StreamSubscription<void> _dbSubscription;
 
   @override
   void initState() {
     super.initState();
+
+    // Subscribe to database changes for auto-refresh
+    _dbSubscription = DbBus.instance.stream.listen((_) {
+      debugPrint('[UI] DbBus event → DebtsStatsCard refresh');
+      _loadStats();
+    });
+
     _loadStats();
+  }
+
+  @override
+  void dispose() {
+    _dbSubscription.cancel();
+    super.dispose();
   }
 
   Future<void> _loadStats() async {
@@ -35,8 +51,12 @@ class _DebtsStatsCardState extends State<DebtsStatsCard> {
           SELECT 
             de.partyId,
             SUM(CASE 
-              WHEN de.kind = 'purchase_credit' OR de.kind = 'loan_out' THEN de.amount
-              WHEN de.kind = 'payment' OR de.kind = 'settlement' THEN -de.amount
+              -- purchase_credit: فقط الآجل يُحتسب كدين
+              WHEN de.kind = 'purchase_credit' AND de.paymentMethod = 'credit' THEN de.amount
+              -- loan_out: يُحتسب دائمًا (نقدي أو آجل - الإقراض دائمًا دين)
+              WHEN de.kind = 'loan_out' THEN de.amount
+              -- المعاملات التي تُسدد ديون: بأي طريقة دفع
+              WHEN (de.kind = 'payment' OR de.kind = 'settlement') THEN -de.amount
               ELSE 0
             END) as balance
           FROM debt_entries de
@@ -54,8 +74,12 @@ class _DebtsStatsCardState extends State<DebtsStatsCard> {
           SELECT 
             de.partyId,
             SUM(CASE 
-              WHEN de.kind = 'purchase_credit' OR de.kind = 'loan_out' THEN de.amount
-              WHEN de.kind = 'payment' OR de.kind = 'settlement' THEN -de.amount
+              -- purchase_credit: فقط الآجل يُحتسب كدين
+              WHEN de.kind = 'purchase_credit' AND de.paymentMethod = 'credit' THEN de.amount
+              -- loan_out: يُحتسب دائمًا (نقدي أو آجل - الإقراض دائمًا دين)
+              WHEN de.kind = 'loan_out' THEN de.amount
+              -- المعاملات التي تُسدد ديون: بأي طريقة دفع
+              WHEN (de.kind = 'payment' OR de.kind = 'settlement') THEN -de.amount
               ELSE 0
             END) as balance
           FROM debt_entries de

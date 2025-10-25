@@ -50,6 +50,7 @@ dependencies:
   flutter_slidable: ^4.0.1
   fl_chart: ^0.69.0
   share_plus: ^10.1.0
+  open_file: ^3.5.9
   crypto: ^3.0.6
   postgres: ^3.0.2
   http: ^1.1.0

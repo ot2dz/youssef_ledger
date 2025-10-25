@@ -116,6 +116,10 @@ class FinanceProvider with ChangeNotifier {
 
   /// Fetches financial data for the date selected in DateProvider.
   Future<void> fetchFinancialDataForSelectedDate() async {
+    // Reload total cash balance from database
+    final savedBalance = await dbHelper.getSetting('totalCashBalance');
+    _totalCashBalance = double.tryParse(savedBalance ?? '0.0') ?? 0.0;
+
     final selectedDate = dateProvider.selectedDate;
 
     // 1. Fetch drawer snapshots for current date
@@ -220,16 +224,27 @@ class FinanceProvider with ChangeNotifier {
 
     _totalIncome = _calculatedTurnover + manualIncomesTotal;
 
+    debugPrint('[FINANCE] ═══════════════════════════════════════');
     debugPrint('[FINANCE] Final income calculation:');
     debugPrint('[FINANCE] Calculated turnover: $_calculatedTurnover');
+    debugPrint('[FINANCE] Manual incomes count: ${manualIncomes.length}');
     debugPrint('[FINANCE] Manual incomes total: $manualIncomesTotal');
     debugPrint('[FINANCE] Total income: $_totalIncome');
 
     final allExpenses = await dbHelper.getExpensesForDate(selectedDate);
     _totalExpenses = allExpenses.fold(0.0, (sum, item) => sum + item.amount);
 
+    debugPrint('[FINANCE] Expenses count: ${allExpenses.length}');
+    debugPrint('[FINANCE] Total expenses: $_totalExpenses');
+
     _grossProfit = _totalIncome * _profitPercent;
     _netProfit = _grossProfit - _totalExpenses;
+
+    debugPrint(
+      '[FINANCE] Gross profit (${(_profitPercent * 100).toStringAsFixed(0)}%): $_grossProfit',
+    );
+    debugPrint('[FINANCE] Net profit: $_netProfit');
+    debugPrint('[FINANCE] ═══════════════════════════════════════');
 
     notifyListeners();
   }
@@ -568,6 +583,54 @@ class FinanceProvider with ChangeNotifier {
     await fetchFinancialDataForSelectedDate();
 
     return savedEntry;
+  }
+
+  /// Update existing debt transaction
+  Future<void> updateDebtTransaction(DebtEntry debtEntry) async {
+    // Get old entry to compare
+    final oldEntries = await dbHelper.getDebtEntriesForParty(debtEntry.partyId);
+    final oldEntry = oldEntries.firstWhere((e) => e.id == debtEntry.id);
+
+    // Update the debt entry in database
+    await dbHelper.updateDebtEntry(debtEntry);
+
+    // Handle cash balance changes if payment method changed or amount changed
+    if (oldEntry.paymentMethod == PaymentMethod.cash ||
+        debtEntry.paymentMethod == PaymentMethod.cash) {
+      // Revert old cash transaction
+      if (oldEntry.paymentMethod == PaymentMethod.cash) {
+        await _revertCashDebtTransaction(oldEntry);
+      }
+      // Apply new cash transaction
+      if (debtEntry.paymentMethod == PaymentMethod.cash) {
+        await _handleCashDebtTransaction(debtEntry);
+      }
+    }
+
+    // Refresh data
+    await fetchFinancialDataForSelectedDate();
+  }
+
+  /// Revert cash balance changes from a debt transaction
+  Future<void> _revertCashDebtTransaction(DebtEntry debtEntry) async {
+    final oldBalance = _totalCashBalance;
+    late final double newBalance;
+
+    // Reverse the previous transaction
+    final wasPayment =
+        debtEntry.kind == 'payment' ||
+        debtEntry.kind == 'purchase_credit' ||
+        debtEntry.kind == 'loan_out';
+
+    if (wasPayment) {
+      // Was a payment, so add it back
+      newBalance = oldBalance + debtEntry.amount;
+    } else {
+      // Was a collection, so subtract it
+      newBalance = oldBalance - debtEntry.amount;
+    }
+
+    await updateTotalCashBalance(newBalance);
   }
 
   /// Handle cash balance changes for debt transactions

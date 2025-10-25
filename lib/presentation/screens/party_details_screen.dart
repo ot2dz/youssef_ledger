@@ -1,5 +1,6 @@
 // lib/presentation/screens/party_details_screen.dart
 import 'package:flutter/material.dart';
+import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:intl/intl.dart'
     as intl
     hide TextDirection; // <-- تجنّب تضارب TextDirection
@@ -454,114 +455,231 @@ class _PartyDetailsScreenState extends State<PartyDetailsScreen> {
     final dateFormat = intl.DateFormat('dd/MM/yyyy', 'en');
     final formattedDate = dateFormat.format(entry.date);
 
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 8),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.08),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
+    return Slidable(
+      key: ValueKey(entry.id),
+      endActionPane: ActionPane(
+        motion: const ScrollMotion(),
+        children: [
+          SlidableAction(
+            onPressed: (_) => _editDebtEntry(entry),
+            backgroundColor: Colors.blue,
+            foregroundColor: Colors.white,
+            icon: Icons.edit,
+            label: 'تعديل',
+            borderRadius: BorderRadius.circular(12),
+          ),
+          SlidableAction(
+            onPressed: (_) => _deleteDebtEntry(entry),
+            backgroundColor: Colors.red,
+            foregroundColor: Colors.white,
+            icon: Icons.delete,
+            label: 'حذف',
+            borderRadius: BorderRadius.circular(12),
           ),
         ],
       ),
-      child: Column(
-        children: [
-          // الصف العلوي: العنوان والأيقونة
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  title,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                  ),
-                ),
-              ),
-              Container(
-                width: 32,
-                height: 32,
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.1),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(icon, color: color, size: 18),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          // المبلغ
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  currencyFormat.format(entry.amount),
-                  style: TextStyle(
-                    color: color,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 18,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          // الصف السفلي: التاريخ والرصيد
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  formattedDate,
-                  style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
-                ),
-              ),
-              Text(
-                relationText,
-                style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
-              ),
-            ],
-          ),
-          // عرض الملاحظة إذا كانت موجودة
-          if (entry.note != null && entry.note!.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade100,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.note_alt_outlined,
-                    size: 14,
-                    color: Colors.grey.shade600,
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      entry.note!,
-                      style: TextStyle(
-                        color: Colors.grey.shade700,
-                        fontSize: 12,
-                        fontStyle: FontStyle.italic,
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-              ),
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 8),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.08),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
             ),
           ],
-        ],
+        ),
+        child: Column(
+          children: [
+            // الصف العلوي: العنوان والأيقونة
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    title,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
+                Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(icon, color: color, size: 18),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            // المبلغ
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    currencyFormat.format(entry.amount),
+                    style: TextStyle(
+                      color: color,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 18,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            // الصف السفلي: التاريخ والرصيد
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    formattedDate,
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                  ),
+                ),
+                Text(
+                  relationText,
+                  style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                ),
+              ],
+            ),
+            // عرض الملاحظة إذا كانت موجودة
+            if (entry.note != null && entry.note!.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.note_alt_outlined,
+                      size: 14,
+                      color: Colors.grey.shade600,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        entry.note!,
+                        style: TextStyle(
+                          color: Colors.grey.shade700,
+                          fontSize: 12,
+                          fontStyle: FontStyle.italic,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
       ),
     );
+  }
+
+  /// معالج تعديل المعاملة
+  void _editDebtEntry(DebtEntry entry) async {
+    final result = await showDebtTransactionModal(
+      context: context,
+      party: widget.party,
+      transactionKind: entry.kind,
+      existingEntry: entry,
+    );
+
+    if (result == true && mounted) {
+      _reload();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('تم تعديل المعاملة بنجاح'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
+  }
+
+  /// معالج حذف المعاملة
+  void _deleteDebtEntry(DebtEntry entry) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          title: const Text('تأكيد الحذف'),
+          content: Text(
+            'هل أنت متأكد من حذف هذه المعاملة؟\n\n'
+            'المبلغ: ${entry.amount.toStringAsFixed(2)}\n'
+            'النوع: ${_getTransactionTypeName(entry.kind)}\n'
+            'التاريخ: ${intl.DateFormat('dd/MM/yyyy').format(entry.date)}',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('إلغاء'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('حذف'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (confirmed == true && mounted) {
+      try {
+        await DatabaseHelper.instance.deleteDebtEntry(entry.id!);
+        _reload();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('تم حذف المعاملة بنجاح'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('حدث خطأ أثناء الحذف: $e'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    }
+  }
+
+  /// الحصول على اسم نوع المعاملة بالعربية
+  String _getTransactionTypeName(String kind) {
+    switch (kind) {
+      case 'purchase_credit':
+        return 'شراء بالدين';
+      case 'payment':
+        return 'تسديد';
+      case 'loan_out':
+        return 'إقراض';
+      case 'settlement':
+        return 'استلام';
+      default:
+        return kind;
+    }
   }
 
   /// معالج الزر الأول (شراء للموردين أو إقراض للأشخاص)

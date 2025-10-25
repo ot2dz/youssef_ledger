@@ -5,18 +5,20 @@ import '../../core/enums.dart';
 import 'package:provider/provider.dart';
 import '../../logic/providers/finance_provider.dart';
 
-/// نموذج إضافة معاملة دين مخصص لطرف معين
+/// نموذج إضافة/تعديل معاملة دين مخصص لطرف معين
 class DebtTransactionModal extends StatefulWidget {
   final Party party;
   final String
   transactionKind; // 'purchase_credit', 'payment', 'loan_out', 'settlement'
   final VoidCallback? onTransactionSaved;
+  final DebtEntry? existingEntry; // للتعديل: معاملة موجودة
 
   const DebtTransactionModal({
     super.key,
     required this.party,
     required this.transactionKind,
     this.onTransactionSaved,
+    this.existingEntry,
   });
 
   @override
@@ -33,8 +35,15 @@ class _DebtTransactionModalState extends State<DebtTransactionModal> {
   @override
   void initState() {
     super.initState();
-    // تحديد الطريقة الافتراضية حسب نوع الطرف ونوع المعاملة
-    _selectedPaymentMethod = _getDefaultPaymentMethod();
+    // إذا كان هناك معاملة موجودة، استخدم بياناتها
+    if (widget.existingEntry != null) {
+      _amountController.text = widget.existingEntry!.amount.toStringAsFixed(2);
+      _noteController.text = widget.existingEntry!.note ?? '';
+      _selectedPaymentMethod = widget.existingEntry!.paymentMethod;
+    } else {
+      // تحديد الطريقة الافتراضية حسب نوع الطرف ونوع المعاملة
+      _selectedPaymentMethod = _getDefaultPaymentMethod();
+    }
   }
 
   @override
@@ -46,16 +55,24 @@ class _DebtTransactionModalState extends State<DebtTransactionModal> {
 
   /// تحديد طريقة الدفع الافتراضية حسب نوع الطرف والمعاملة
   PaymentMethod _getDefaultPaymentMethod() {
-    // للموردين: دائماً نقداً في القروض والاستلام
+    // للموردين: حسب نوع المعاملة
     if (widget.party.role == PartyRole.vendor) {
-      return PaymentMethod.cash;
+      switch (widget.transactionKind) {
+        case 'purchase_credit':
+          return PaymentMethod.credit; // الشراء من المورد يكون آجل افتراضياً
+        case 'payment':
+          return PaymentMethod.cash; // التسديد للمورد يكون نقداً افتراضياً
+        default:
+          return PaymentMethod.cash;
+      }
     }
 
     // للأشخاص: حسب نوع المعاملة
     switch (widget.transactionKind) {
       case 'loan_out':
+        return PaymentMethod.cash; // الإقراض افتراضيًا نقدي (الأكثر شيوعًا)
       case 'settlement':
-        return PaymentMethod.cash; // الإقراض والاستلام عادة نقداً
+        return PaymentMethod.cash; // الاستلام عادة نقداً
       case 'purchase_credit':
       case 'payment':
         return PaymentMethod.credit; // الشراء والدفع عادة آجل
@@ -66,17 +83,20 @@ class _DebtTransactionModalState extends State<DebtTransactionModal> {
 
   /// الحصول على عنوان النموذج بناءً على نوع المعاملة
   String get _getTitle {
+    final isEditing = widget.existingEntry != null;
+    final prefix = isEditing ? 'تعديل' : '';
+
     switch (widget.transactionKind) {
       case 'purchase_credit':
-        return 'شراء بالدين من ${widget.party.name}';
+        return '${prefix.isNotEmpty ? "$prefix " : ""}شراء بالدين من ${widget.party.name}';
       case 'payment':
-        return 'تسديد دفعة لـ ${widget.party.name}';
+        return '${prefix.isNotEmpty ? "$prefix " : ""}تسديد دفعة لـ ${widget.party.name}';
       case 'loan_out':
-        return 'إقراض مبلغ لـ ${widget.party.name}';
+        return '${prefix.isNotEmpty ? "$prefix " : ""}إقراض مبلغ لـ ${widget.party.name}';
       case 'settlement':
-        return 'استلام دفعة من ${widget.party.name}';
+        return '${prefix.isNotEmpty ? "$prefix " : ""}استلام دفعة من ${widget.party.name}';
       default:
-        return 'معاملة مع ${widget.party.name}';
+        return '${prefix.isNotEmpty ? "$prefix " : ""}معاملة مع ${widget.party.name}';
     }
   }
 
@@ -112,6 +132,12 @@ class _DebtTransactionModalState extends State<DebtTransactionModal> {
 
   /// الحصول على نص الزر بناءً على نوع المعاملة
   String get _getButtonText {
+    final isEditing = widget.existingEntry != null;
+
+    if (isEditing) {
+      return 'حفظ التعديلات';
+    }
+
     switch (widget.transactionKind) {
       case 'purchase_credit':
         return 'تسجيل الشراء';
@@ -295,7 +321,7 @@ class _DebtTransactionModalState extends State<DebtTransactionModal> {
     );
   }
 
-  /// حفظ المعاملة في قاعدة البيانات
+  /// حفظ أو تعديل المعاملة في قاعدة البيانات
   void _saveTransaction() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
 
@@ -304,17 +330,26 @@ class _DebtTransactionModalState extends State<DebtTransactionModal> {
     });
 
     try {
+      final isEditing = widget.existingEntry != null;
+
       final debtEntry = DebtEntry(
-        date: DateTime.now(),
+        id: isEditing ? widget.existingEntry!.id : null,
+        date: isEditing ? widget.existingEntry!.date : DateTime.now(),
         partyId: widget.party.id!,
         kind: widget.transactionKind,
         amount: double.parse(_amountController.text),
         paymentMethod: _selectedPaymentMethod,
         note: _noteController.text.isNotEmpty ? _noteController.text : null,
-        createdAt: DateTime.now(),
+        createdAt: isEditing ? widget.existingEntry!.createdAt : DateTime.now(),
       );
 
-      await context.read<FinanceProvider>().addDebtTransaction(debtEntry);
+      if (isEditing) {
+        // تعديل معاملة موجودة
+        await context.read<FinanceProvider>().updateDebtTransaction(debtEntry);
+      } else {
+        // إضافة معاملة جديدة
+        await context.read<FinanceProvider>().addDebtTransaction(debtEntry);
+      }
 
       if (mounted) {
         // تحديث البيانات في المزود
@@ -327,7 +362,11 @@ class _DebtTransactionModalState extends State<DebtTransactionModal> {
 
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('تم حفظ ${_getSuccessMessage()} بنجاح'),
+            content: Text(
+              isEditing
+                  ? 'تم تعديل ${_getSuccessMessage()} بنجاح'
+                  : 'تم حفظ ${_getSuccessMessage()} بنجاح',
+            ),
             backgroundColor: Colors.green,
             behavior: SnackBarBehavior.floating,
           ),
@@ -337,7 +376,9 @@ class _DebtTransactionModalState extends State<DebtTransactionModal> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('حدث خطأ أثناء الحفظ: $e'),
+            content: Text(
+              'حدث خطأ أثناء ${widget.existingEntry != null ? "التعديل" : "الحفظ"}: $e',
+            ),
             backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
           ),
@@ -369,12 +410,13 @@ class _DebtTransactionModalState extends State<DebtTransactionModal> {
   }
 }
 
-/// دالة مساعدة لفتح نموذج معاملة الدين
+/// دالة مساعدة لفتح نموذج معاملة الدين (إضافة/تعديل)
 Future<bool?> showDebtTransactionModal({
   required BuildContext context,
   required Party party,
   required String transactionKind,
   VoidCallback? onTransactionSaved,
+  DebtEntry? existingEntry, // للتعديل
 }) {
   return showModalBottomSheet<bool>(
     context: context,
@@ -384,6 +426,7 @@ Future<bool?> showDebtTransactionModal({
       party: party,
       transactionKind: transactionKind,
       onTransactionSaved: onTransactionSaved,
+      existingEntry: existingEntry,
     ),
   );
 }

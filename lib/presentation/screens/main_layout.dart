@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:youssef_fabric_ledger/presentation/screens/expenses_screen.dart';
 import 'package:youssef_fabric_ledger/presentation/screens/home_screen.dart';
 import 'package:youssef_fabric_ledger/presentation/screens/debts_screen.dart';
+import 'package:youssef_fabric_ledger/presentation/screens/settings_screen.dart';
 import 'package:youssef_fabric_ledger/presentation/widgets/add_transaction_modal.dart';
 import 'package:youssef_fabric_ledger/logic/providers/finance_provider.dart';
 import 'package:youssef_fabric_ledger/features/reports/presentation/reports_screen.dart';
@@ -118,9 +119,25 @@ class _MainLayoutState extends State<MainLayout> {
               onSelected: (value) async {
                 if (value == 'logout') {
                   await _showLogoutConfirmation();
+                } else if (value == 'settings') {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (context) => const SettingsScreen(),
+                    ),
+                  );
                 }
               },
               itemBuilder: (BuildContext context) => [
+                const PopupMenuItem(
+                  value: 'settings',
+                  child: Row(
+                    children: [
+                      Icon(Icons.settings_rounded),
+                      SizedBox(width: 8),
+                      Text('الإعدادات'),
+                    ],
+                  ),
+                ),
                 const PopupMenuItem(
                   value: 'logout',
                   child: Row(

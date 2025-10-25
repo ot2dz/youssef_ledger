@@ -730,7 +730,33 @@ class DatabaseHelper {
   Future<DebtEntry> createDebtEntry(DebtEntry debtEntry) async {
     final db = await instance.database;
     final id = await db.insert('debt_entries', debtEntry.toMap());
+    DbBus.instance.bump(); // ✅ إطلاق حدث التحديث
     return debtEntry.copyWith(id: id);
+  }
+
+  /// تحديث معاملة دين موجودة
+  Future<void> updateDebtEntry(DebtEntry debtEntry) async {
+    if (debtEntry.id == null) {
+      throw ArgumentError('Cannot update debt entry without an ID');
+    }
+
+    final db = await instance.database;
+    await db.update(
+      'debt_entries',
+      debtEntry.toMap(),
+      where: 'id = ?',
+      whereArgs: [debtEntry.id],
+    );
+    DbBus.instance.bump(); // ✅ إطلاق حدث التحديث
+    debugPrint('[DB] Updated debt entry: id=${debtEntry.id}');
+  }
+
+  /// حذف معاملة دين
+  Future<void> deleteDebtEntry(int debtEntryId) async {
+    final db = await instance.database;
+    await db.delete('debt_entries', where: 'id = ?', whereArgs: [debtEntryId]);
+    DbBus.instance.bump(); // ✅ إطلاق حدث التحديث
+    debugPrint('[DB] Deleted debt entry: id=$debtEntryId');
   }
 
   Future<double> getPartyBalance(int partyId) async {
@@ -744,9 +770,23 @@ class DatabaseHelper {
     for (var entry in entries) {
       final kind = entry['kind'] as String;
       final amount = (entry['amount'] as num).toDouble();
-      if (kind == 'purchase_credit' || kind == 'loan_out') {
+      final paymentMethod = entry['paymentMethod'] as String?;
+
+      // المعاملات التي تُنشئ ديون جديدة
+      final bool isDebtCreation =
+          kind == 'purchase_credit' || kind == 'loan_out';
+      final bool isDebtPayment = kind == 'payment' || kind == 'settlement';
+
+      // تخطي فقط purchase_credit النقدي (الشراء النقدي ليس دينًا)
+      // لكن loan_out يُحتسب دائمًا (الإقراض دائمًا دين، نقدي أو آجل)
+      if (kind == 'purchase_credit' && paymentMethod != 'credit') {
+        continue; // تجاهل الشراء النقدي فقط
+      }
+
+      // حساب التغيير في الرصيد
+      if (isDebtCreation) {
         balance += amount;
-      } else if (kind == 'payment' || kind == 'settlement') {
+      } else if (isDebtPayment) {
         balance -= amount;
       }
     }
@@ -805,8 +845,12 @@ class DatabaseHelper {
       SELECT 
         COALESCE(COUNT(de.id), 0) as transactionCount,
         COALESCE(SUM(CASE 
-          WHEN de.kind = 'purchase_credit' OR de.kind = 'loan_out' THEN de.amount
-          WHEN de.kind = 'payment' OR de.kind = 'settlement' THEN -de.amount
+          -- purchase_credit: فقط الآجل يُحتسب كدين
+          WHEN de.kind = 'purchase_credit' AND de.paymentMethod = 'credit' THEN de.amount
+          -- loan_out: يُحتسب دائمًا (نقدي أو آجل - الإقراض دائمًا دين)
+          WHEN de.kind = 'loan_out' THEN de.amount
+          -- المعاملات التي تُسدد ديون: بأي طريقة دفع
+          WHEN (de.kind = 'payment' OR de.kind = 'settlement') THEN -de.amount
           ELSE 0
         END), 0) as balance,
         MAX(de.date) as lastTransactionDate
@@ -849,8 +893,12 @@ class DatabaseHelper {
         p.id,
         COALESCE(COUNT(de.id), 0) as transactionCount,
         COALESCE(SUM(CASE 
-          WHEN de.kind = 'purchase_credit' OR de.kind = 'loan_out' THEN de.amount
-          WHEN de.kind = 'payment' OR de.kind = 'settlement' THEN -de.amount
+          -- purchase_credit: فقط الآجل يُحتسب كدين
+          WHEN de.kind = 'purchase_credit' AND de.paymentMethod = 'credit' THEN de.amount
+          -- loan_out: يُحتسب دائمًا (نقدي أو آجل - الإقراض دائمًا دين)
+          WHEN de.kind = 'loan_out' THEN de.amount
+          -- المعاملات التي تُسدد ديون: بأي طريقة دفع
+          WHEN (de.kind = 'payment' OR de.kind = 'settlement') THEN -de.amount
           ELSE 0
         END), 0) as balance,
         MAX(de.date) as lastTransactionDate
@@ -1048,6 +1096,129 @@ class DatabaseHelper {
       orderBy: 'date DESC',
     );
     return List.generate(maps.length, (i) => Income.fromMap(maps[i]));
+  }
+
+  Future<int> deleteIncome(int id) async {
+    final db = await instance.database;
+    return db.delete('income', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<int> updateIncome(Income income) async {
+    final db = await instance.database;
+    return db.update(
+      'income',
+      income.toMap(),
+      where: 'id = ?',
+      whereArgs: [income.id],
+    );
+  }
+
+  /// Update income with cash balance impact tracking
+  Future<void> updateIncomeWithBalanceTracking({
+    required Income oldIncome,
+    required Income newIncome,
+    required double currentCashBalance,
+  }) async {
+    final db = await instance.database;
+
+    // Calculate the difference
+    final oldAmount = oldIncome.source == TransactionSource.cash
+        ? oldIncome.amount
+        : 0;
+    final newAmount = newIncome.source == TransactionSource.cash
+        ? newIncome.amount
+        : 0;
+    final difference = newAmount - oldAmount;
+
+    if (difference != 0) {
+      final oldBalance = currentCashBalance;
+      final newBalance = oldBalance + difference;
+
+      // Update income
+      await db.update(
+        'income',
+        newIncome.toMap(),
+        where: 'id = ?',
+        whereArgs: [newIncome.id],
+      );
+
+      // Update actual cash balance in app_settings
+      await saveSetting('totalCashBalance', newBalance.toString());
+
+      // Log cash balance change
+      final log = CashBalanceLog(
+        timestamp: DateTime.now(),
+        changeType: CashBalanceChangeType.cashIncome,
+        oldBalance: oldBalance,
+        newBalance: newBalance,
+        amount: difference.abs().toDouble(),
+        reason: difference > 0
+            ? 'تعديل دخل نقدي (زيادة): ${newIncome.note ?? ""}'
+            : 'تعديل دخل نقدي (نقصان): ${newIncome.note ?? ""}',
+        details:
+            'تم التعديل من ${oldAmount.toStringAsFixed(2)} إلى ${newAmount.toStringAsFixed(2)}',
+        createdAt: DateTime.now(),
+      );
+
+      await insertCashBalanceLog(log);
+    } else {
+      // No cash balance impact, just update the income
+      await db.update(
+        'income',
+        newIncome.toMap(),
+        where: 'id = ?',
+        whereArgs: [newIncome.id],
+      );
+    }
+  }
+
+  /// Delete income with cash balance impact tracking
+  Future<void> deleteIncomeWithBalanceTracking({
+    required int incomeId,
+    required double currentCashBalance,
+  }) async {
+    final db = await instance.database;
+
+    // Get the income first
+    final maps = await db.query(
+      'income',
+      where: 'id = ?',
+      whereArgs: [incomeId],
+      limit: 1,
+    );
+
+    if (maps.isEmpty) return;
+
+    final income = Income.fromMap(maps.first);
+
+    // If it's cash income, update the balance
+    if (income.source == TransactionSource.cash && income.amount > 0) {
+      final oldBalance = currentCashBalance;
+      final newBalance = oldBalance - income.amount;
+
+      // Delete the income
+      await db.delete('income', where: 'id = ?', whereArgs: [incomeId]);
+
+      // Update actual cash balance in app_settings
+      await saveSetting('totalCashBalance', newBalance.toString());
+
+      // Log cash balance change
+      final log = CashBalanceLog(
+        timestamp: DateTime.now(),
+        changeType: CashBalanceChangeType.cashIncome,
+        oldBalance: oldBalance,
+        newBalance: newBalance,
+        amount: income.amount,
+        reason: 'حذف دخل نقدي: ${income.note ?? ""}',
+        details: 'مبلغ: ${income.amount.toStringAsFixed(2)}',
+        createdAt: DateTime.now(),
+      );
+
+      await insertCashBalanceLog(log);
+    } else {
+      // No cash balance impact, just delete
+      await db.delete('income', where: 'id = ?', whereArgs: [incomeId]);
+    }
   }
 
   Future<List<DrawerSnapshot>> getAllDrawerSnapshots() async {

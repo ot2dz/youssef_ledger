@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:path_provider/path_provider.dart';
+import 'package:open_file/open_file.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:intl/intl.dart';
 import '../features/reports/data/repository.dart';
@@ -154,8 +155,8 @@ class PdfService {
       ),
     );
 
-    // حفظ ومشاركة الملف
-    await _savePdf(
+    // حفظ وفتح الملف
+    await openPdf(
       pdf,
       'Profit_Report_${_formatDateForFilename(DateTime.now())}',
     );
@@ -208,17 +209,55 @@ class PdfService {
     return '$sign$formattedAmount DZD';
   }
 
-  static Future<void> _savePdf(pw.Document pdf, String filename) async {
+  static Future<String> _savePdf(pw.Document pdf, String filename) async {
     try {
-      final output = await getTemporaryDirectory();
-      final file = File('${output.path}/$filename.pdf');
+      // Save to Downloads folder for Android, Documents for iOS
+      Directory? directory;
+
+      if (Platform.isAndroid) {
+        // For Android, try to save to Downloads folder
+        directory = Directory('/storage/emulated/0/Download');
+        if (!await directory.exists()) {
+          // Fallback to app's external storage
+          directory = await getExternalStorageDirectory();
+        }
+      } else if (Platform.isIOS) {
+        // For iOS, use application documents directory
+        directory = await getApplicationDocumentsDirectory();
+      } else {
+        // For other platforms, use downloads directory
+        directory = await getDownloadsDirectory();
+      }
+
+      if (directory == null) {
+        throw Exception('Could not find suitable directory to save PDF');
+      }
+
+      final file = File('${directory.path}/$filename.pdf');
       await file.writeAsBytes(await pdf.save());
 
-      await Share.shareXFiles([
-        XFile(file.path),
-      ], text: 'Profit Report from Youssef Fabric Ledger');
+      // Return file path for further actions
+      return file.path;
     } catch (e) {
       throw Exception('Error saving PDF file: $e');
     }
+  }
+
+  static Future<void> openPdf(pw.Document pdf, String filename) async {
+    final filePath = await _savePdf(pdf, filename);
+
+    // Open the PDF file directly
+    final result = await OpenFile.open(filePath);
+
+    if (result.type != ResultType.done) {
+      throw Exception('Failed to open PDF: ${result.message}');
+    }
+  }
+
+  static Future<void> sharePdf(pw.Document pdf, String filename) async {
+    final filePath = await _savePdf(pdf, filename);
+
+    // Share the file
+    await Share.shareXFiles([XFile(filePath)], text: 'تقرير مالي');
   }
 }

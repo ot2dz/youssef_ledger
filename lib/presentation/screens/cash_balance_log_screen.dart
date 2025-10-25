@@ -168,7 +168,25 @@ class _CashBalanceLogScreenState extends State<CashBalanceLogScreen> {
     } else if (isYesterday) {
       dateText = 'أمس';
     } else {
-      dateText = DateFormat('EEEE، dd MMMM yyyy', 'ar').format(date);
+      // Get month name in Arabic
+      final monthNames = [
+        'يناير',
+        'فبراير',
+        'مارس',
+        'أبريل',
+        'مايو',
+        'يونيو',
+        'يوليو',
+        'أغسطس',
+        'سبتمبر',
+        'أكتوبر',
+        'نوفمبر',
+        'ديسمبر',
+      ];
+      final day = date.day;
+      final month = monthNames[date.month - 1];
+      final year = date.year;
+      dateText = '$day $month $year';
     }
 
     return Container(
@@ -276,11 +294,12 @@ class _CashBalanceLogScreenState extends State<CashBalanceLogScreen> {
                         ),
                         textDirection: ui.TextDirection.rtl,
                       ),
-                      Text(
-                        log.reason,
-                        style: Theme.of(context).textTheme.bodyMedium,
-                        textDirection: ui.TextDirection.rtl,
-                      ),
+                      if (log.reason.isNotEmpty && log.reason != 'null')
+                        Text(
+                          log.reason,
+                          style: Theme.of(context).textTheme.bodyMedium,
+                          textDirection: ui.TextDirection.rtl,
+                        ),
                     ],
                   ),
                 ),
@@ -326,17 +345,24 @@ class _CashBalanceLogScreenState extends State<CashBalanceLogScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(
-                  'الرصيد السابق: ${log.oldBalance.toStringAsFixed(2)} د.ج',
-                  style: Theme.of(context).textTheme.bodySmall,
-                  textDirection: ui.TextDirection.rtl,
+                Flexible(
+                  child: Text(
+                    'الرصيد السابق: ${log.oldBalance.toStringAsFixed(2)} د.ج',
+                    style: Theme.of(context).textTheme.bodySmall,
+                    textDirection: ui.TextDirection.rtl,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
-                Text(
-                  'الرصيد الجديد: ${log.newBalance.toStringAsFixed(2)} د.ج',
-                  style: Theme.of(
-                    context,
-                  ).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.bold),
-                  textDirection: ui.TextDirection.rtl,
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    'الرصيد الجديد: ${log.newBalance.toStringAsFixed(2)} د.ج',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                    textDirection: ui.TextDirection.rtl,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
               ],
             ),
@@ -470,9 +496,6 @@ class _CashBalanceLogScreenState extends State<CashBalanceLogScreen> {
   }
 
   Widget _buildStatsCard() {
-    final totalChanges = _logs.length;
-    final increases = _logs.where((log) => log.changeAmount > 0).length;
-    final decreases = _logs.where((log) => log.changeAmount < 0).length;
     final totalIncreased = _logs
         .where((log) => log.changeAmount > 0)
         .fold(0.0, (sum, log) => sum + log.changeAmount);
@@ -500,35 +523,6 @@ class _CashBalanceLogScreenState extends State<CashBalanceLogScreen> {
             textDirection: ui.TextDirection.rtl,
           ),
           const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _buildStatItem(
-                  'العدد الكلي',
-                  totalChanges.toString(),
-                  Icons.swap_vert,
-                  Colors.grey,
-                ),
-              ),
-              Expanded(
-                child: _buildStatItem(
-                  'زيادات',
-                  increases.toString(),
-                  Icons.arrow_upward,
-                  Colors.green,
-                ),
-              ),
-              Expanded(
-                child: _buildStatItem(
-                  'نقصان',
-                  decreases.toString(),
-                  Icons.arrow_downward,
-                  Colors.red,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
           Row(
             children: [
               Expanded(

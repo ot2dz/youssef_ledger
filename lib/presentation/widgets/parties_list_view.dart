@@ -516,16 +516,18 @@ class _PartiesListState extends State<PartiesList>
             leading: CircleAvatar(
               backgroundColor: isZero
                   ? Colors.grey
-                  : isPositive
-                  ? Colors.red.shade100
-                  : Colors.green.shade100,
+                  : widget.role == PartyRole.vendor
+                  ? (isPositive ? Colors.red.shade100 : Colors.green.shade100)
+                  : (isPositive ? Colors.green.shade100 : Colors.red.shade100),
               child: Icon(
                 widget.role == PartyRole.vendor ? Icons.store : Icons.person,
                 color: isZero
                     ? Colors.grey.shade600
-                    : isPositive
-                    ? Colors.red.shade700
-                    : Colors.green.shade700,
+                    : widget.role == PartyRole.vendor
+                    ? (isPositive ? Colors.red.shade700 : Colors.green.shade700)
+                    : (isPositive
+                          ? Colors.green.shade700
+                          : Colors.red.shade700),
               ),
             ),
             title: Text(
@@ -547,29 +549,35 @@ class _PartiesListState extends State<PartiesList>
                       color: Colors.grey.shade600,
                     ),
                     const SizedBox(width: 4),
-                    Text(
-                      transactionCount == 0
-                          ? 'لا توجد معاملات'
-                          : '$transactionCount معاملة',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.grey.shade600,
+                    Flexible(
+                      child: Text(
+                        transactionCount == 0
+                            ? 'لا توجد معاملات'
+                            : '$transactionCount معاملة',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey.shade600,
+                        ),
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                     if (transactionCount > 0) ...[
                       if (lastTransactionText != null) ...[
-                        const SizedBox(width: 12),
+                        const SizedBox(width: 8),
                         Icon(
                           Icons.access_time,
                           size: 14,
                           color: Colors.grey.shade600,
                         ),
                         const SizedBox(width: 4),
-                        Text(
-                          lastTransactionText,
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.grey.shade600,
+                        Flexible(
+                          child: Text(
+                            lastTransactionText,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey.shade600,
+                            ),
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ],
@@ -589,9 +597,9 @@ class _PartiesListState extends State<PartiesList>
                     fontSize: 16,
                     color: isZero
                         ? Colors.grey
-                        : isPositive
-                        ? Colors.red
-                        : Colors.green,
+                        : widget.role == PartyRole.vendor
+                        ? (isPositive ? Colors.red : Colors.green)
+                        : (isPositive ? Colors.green : Colors.red),
                   ),
                 ),
                 Text(

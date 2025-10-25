@@ -404,8 +404,9 @@ class _ReportsScreenState extends State<ReportsScreen>
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('تم إنشاء تقرير PDF بنجاح'),
+            content: Text('تم إنشاء وفتح تقرير PDF بنجاح'),
             backgroundColor: Colors.green,
+            duration: Duration(seconds: 3),
           ),
         );
       }
@@ -421,6 +422,7 @@ class _ReportsScreenState extends State<ReportsScreen>
           SnackBar(
             content: Text('خطأ في إنشاء التقرير: $e'),
             backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4),
           ),
         );
       }
@@ -483,31 +485,25 @@ class ModernSummaryCards extends StatelessWidget {
               const SizedBox(height: 20),
 
               if (reportType == ReportType.all) ...[
-                // All data view
-                Row(
-                  children: [
-                    Expanded(
-                      child: _ModernMetricCard(
-                        title: 'إجمالي الدخل',
-                        amount: data.incomeTotal,
-                        icon: Icons.trending_up,
-                        color: const Color(0xFF10B981),
-                        gradient: const [Color(0xFF10B981), Color(0xFF059669)],
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: _ModernMetricCard(
-                        title: 'إجمالي المصروفات',
-                        amount: data.expensesTotal,
-                        icon: Icons.trending_down,
-                        color: const Color(0xFFEF4444),
-                        gradient: const [Color(0xFFEF4444), Color(0xFFDC2626)],
-                      ),
-                    ),
-                  ],
+                // All data view - vertical layout
+                _ModernMetricCard(
+                  title: 'إجمالي الدخل',
+                  amount: data.incomeTotal,
+                  icon: Icons.trending_up,
+                  color: const Color(0xFF10B981),
+                  gradient: const [Color(0xFF10B981), Color(0xFF059669)],
+                  isWide: true,
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
+                _ModernMetricCard(
+                  title: 'إجمالي المصروفات',
+                  amount: data.expensesTotal,
+                  icon: Icons.trending_down,
+                  color: const Color(0xFFEF4444),
+                  gradient: const [Color(0xFFEF4444), Color(0xFFDC2626)],
+                  isWide: true,
+                ),
+                const SizedBox(height: 12),
                 _ModernMetricCard(
                   title: 'صافي الربح',
                   amount: data.netProfitTotal,
@@ -569,7 +565,7 @@ class _ModernMetricCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topLeft,
@@ -585,39 +581,47 @@ class _ModernMetricCard extends StatelessWidget {
           ),
         ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Expanded(
-                child: Text(
+          // Icon with glassmorphism background
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.25),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: Colors.white.withOpacity(0.3),
+                width: 1.5,
+              ),
+            ),
+            child: Icon(icon, color: Colors.white, size: 32),
+          ),
+          const SizedBox(width: 16),
+          // Title and Amount
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
                   title,
-                  style: const TextStyle(
-                    color: Colors.white,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.9),
                     fontSize: 14,
                     fontWeight: FontWeight.w500,
                   ),
                 ),
-              ),
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(12),
+                const SizedBox(height: 6),
+                Text(
+                  _formatAmount(amount),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.5,
+                  ),
                 ),
-                child: Icon(icon, color: Colors.white, size: 20),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Text(
-            _formatAmount(amount),
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
+              ],
             ),
           ),
         ],
@@ -626,21 +630,27 @@ class _ModernMetricCard extends StatelessWidget {
   }
 
   String _formatAmount(double amount) {
-    if (amount == 0) return '0 د.ج';
+    if (amount == 0) return '0.00 د.ج';
 
     final isNegative = amount < 0;
     final absAmount = amount.abs();
 
-    String formattedAmount;
-    if (absAmount >= 1000000) {
-      formattedAmount = '${(absAmount / 1000000).toStringAsFixed(1)}م';
-    } else if (absAmount >= 1000) {
-      formattedAmount = '${(absAmount / 1000).toStringAsFixed(1)}ك';
-    } else {
-      formattedAmount = absAmount.toStringAsFixed(0);
+    // Format with thousand separators
+    final formatter = absAmount.toStringAsFixed(2);
+    final parts = formatter.split('.');
+    final intPart = parts[0];
+    final decimalPart = parts[1];
+
+    // Add thousand separators
+    final buffer = StringBuffer();
+    for (int i = 0; i < intPart.length; i++) {
+      if (i > 0 && (intPart.length - i) % 3 == 0) {
+        buffer.write(',');
+      }
+      buffer.write(intPart[i]);
     }
 
     final sign = isNegative ? '-' : '';
-    return '$sign$formattedAmount د.ج';
+    return '$sign${buffer.toString()}.$decimalPart د.ج';
   }
 }
